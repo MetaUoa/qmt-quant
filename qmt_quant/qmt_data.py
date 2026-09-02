@@ -72,6 +72,10 @@ def _normalize_frame(frame: pd.DataFrame, fields: list[str] | None = None) -> pd
         return pd.DataFrame(columns=wanted)
     out = frame.copy()
     out.index = _normalize_index(out.index)
+    # Keep a canonical, source-independent index shape. Parquet round-trips
+    # otherwise restore the serialized ``date`` column as a named index while
+    # fresh QMT frames usually have an unnamed index.
+    out.index.name = None
     out = out.loc[~out.index.isna()]
     out = out[~out.index.duplicated(keep="last")].sort_index()
     for field in wanted:
