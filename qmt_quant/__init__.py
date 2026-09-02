@@ -4,7 +4,7 @@ from .backtest import BacktestResult, calculate_metrics, rebalance_schedule, run
 from .config import AcceptanceConfig, CostConfig, DataConfig, StrategyConfig
 from .reference_data import ReferenceData
 
-__version__ = "3.7.0"
+__version__ = "3.8.0"
 
 __all__ = [
     "AcceptanceConfig",
