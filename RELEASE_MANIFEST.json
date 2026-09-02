@@ -1,0 +1,14 @@
+{
+  "version": "3.7.0",
+  "scope": "V2.2 data audit through V7 guarded MiniQMT execution",
+  "offline_verification": {
+    "status": "PASS",
+    "tests_passed": 31,
+    "tests_skipped": 1,
+    "core_coverage_percent": 65.76,
+    "coverage_gate_percent": 60
+  },
+  "real_qmt_2018_2025_result": "NOT_RUN_IN_CONTAINER",
+  "reason": "The user's MiniQMT/QMT local historical database and brokerage session are not available in this environment.",
+  "claim_policy": "150x is reported as passed only when V5 acceptance grade A passes on the user's real strict QMT run."
+}
