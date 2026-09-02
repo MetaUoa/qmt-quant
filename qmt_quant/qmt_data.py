@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -20,6 +21,15 @@ def _xtdata():
     return xtdata
 
 
+def _cache_only_enabled() -> bool:
+    return os.environ.get("QMT_QUANT_CACHE_ONLY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def get_sector_universe(sector: str = "沪深A股") -> List[str]:
     xtdata = _xtdata()
     codes = list(xtdata.get_stock_list_in_sector(sector) or [])
@@ -34,6 +44,10 @@ def read_universe_file(path: str | Path) -> List[str]:
 
 
 def download_daily_history(codes: Iterable[str], start: str, end: str) -> None:
+    if _cache_only_enabled():
+        raise RuntimeError(
+            "QMT_QUANT_CACHE_ONLY is enabled; refusing to call xtquant download APIs."
+        )
     xtdata = _xtdata()
     code_list = list(dict.fromkeys(codes))
     if not code_list:
@@ -72,9 +86,6 @@ def _normalize_frame(frame: pd.DataFrame, fields: list[str] | None = None) -> pd
         return pd.DataFrame(columns=wanted)
     out = frame.copy()
     out.index = _normalize_index(out.index)
-    # Keep a canonical, source-independent index shape. Parquet round-trips
-    # otherwise restore the serialized ``date`` column as a named index while
-    # fresh QMT frames usually have an unnamed index.
     out.index.name = None
     out = out.loc[~out.index.isna()]
     out = out[~out.index.duplicated(keep="last")].sort_index()
@@ -98,7 +109,9 @@ def _read_cached(path: Path, start: str, end: str, fields: list[str]) -> pd.Data
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
     frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
-    return _normalize_frame(frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)], fields)
+    return _normalize_frame(
+        frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)], fields
+    )
 
 
 def _write_cached(path: Path, frame: pd.DataFrame) -> None:
@@ -131,6 +144,9 @@ def load_market_fields(
         unresolved.append(code)
 
     if not unresolved:
+        return result
+
+    if _cache_only_enabled():
         return result
 
     xtdata = _xtdata()
@@ -195,7 +211,11 @@ def coverage_report(codes: Iterable[str], bars: Dict[str, pd.DataFrame]) -> pd.D
     rows = []
     for code in codes:
         frame = bars.get(code)
-        valid = pd.Series(dtype=float) if frame is None or frame.empty else pd.to_numeric(frame["close"], errors="coerce").dropna()
+        valid = (
+            pd.Series(dtype=float)
+            if frame is None or frame.empty
+            else pd.to_numeric(frame["close"], errors="coerce").dropna()
+        )
         rows.append(
             {
                 "code": code,
