@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 import time
+from typing import Callable
 
 import pandas as pd
 
@@ -40,6 +42,64 @@ def active_in_range(stock_basic: pd.DataFrame, start: str, end: str) -> pd.DataF
     return stock_basic.loc[overlap].sort_values("ts_code").reset_index(drop=True)
 
 
+def _configure_utf8_console() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (AttributeError, ValueError):
+                pass
+
+
+def _reconnect_baostock(api) -> None:
+    try:
+        api.logout()
+    except Exception:
+        pass
+    login = api.login()
+    if str(getattr(login, "error_code", "0")) != "0":
+        raise RuntimeError(
+            f"BaoStock reconnect failed: {getattr(login, 'error_code', '')} "
+            f"{getattr(login, 'error_msg', '')}".strip()
+        )
+
+
+def fetch_history_with_retry(
+    api,
+    code: str,
+    start: str,
+    end: str,
+    *,
+    adjusted: bool,
+    include_meta: bool,
+    attempts: int = 4,
+    sleep_seconds: float = 0.5,
+    fetcher: Callable | None = None,
+) -> pd.DataFrame:
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+    fetch = fetcher or fetch_history
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return fetch(
+                api,
+                code,
+                start,
+                end,
+                adjusted=adjusted,
+                include_meta=include_meta,
+            )
+        except Exception as exc:
+            last = exc
+            if attempt >= attempts - 1:
+                break
+            _reconnect_baostock(api)
+            time.sleep(max(0.5, sleep_seconds) * (2 ** attempt))
+    raise RuntimeError(f"{code} history fetch failed after retries: {last}") from last
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Download one deterministic BaoStock A-share shard")
     p.add_argument("--start", default="20170101")
@@ -48,13 +108,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reference-dir", required=True)
     p.add_argument("--bar-cache-dir", required=True)
     p.add_argument("--shard-index", type=int, required=True)
-    p.add_argument("--shard-count", type=int, default=20)
+    p.add_argument("--shard-count", type=int, default=5)
     p.add_argument("--sleep", type=float, default=0.02)
     p.add_argument("--refresh", action="store_true")
     return p.parse_args()
 
 
 def main() -> int:
+    _configure_utf8_console()
     args = parse_args()
     ref_root = Path(args.reference_dir)
     cache_root = Path(args.bar_cache_dir)
@@ -75,24 +136,6 @@ def main() -> int:
         basic.to_parquet(ref_root / "stock_basic.parquet", index=False)
         calendar.to_parquet(ref_root / "trade_calendar.parquet", index=False)
 
-        def fetch_with_retry(code: str, *, adjusted: bool, include_meta: bool) -> pd.DataFrame:
-            last: Exception | None = None
-            for attempt in range(4):
-                try:
-                    return fetch_history(
-                        bs,
-                        code,
-                        args.start,
-                        args.end,
-                        adjusted=adjusted,
-                        include_meta=include_meta,
-                    )
-                except Exception as exc:
-                    last = exc
-                    if attempt < 3:
-                        time.sleep(max(0.5, args.sleep) * (2 ** attempt))
-            raise RuntimeError(f"{code} history fetch failed after retries: {last}") from last
-
         adjusted_loaded = 0
         raw_loaded = 0
         codes = list(basic["ts_code"])
@@ -101,7 +144,15 @@ def main() -> int:
             raw_path = raw_root / f"{code}.parquet"
             if args.refresh or not front_path.exists():
                 try:
-                    frame = fetch_with_retry(code, adjusted=True, include_meta=False)
+                    frame = fetch_history_with_retry(
+                        bs,
+                        code,
+                        args.start,
+                        args.end,
+                        adjusted=True,
+                        include_meta=False,
+                        sleep_seconds=args.sleep,
+                    )
                     if not frame.empty:
                         _write_qmt_cache(frame, front_path)
                 except Exception as exc:
@@ -111,7 +162,15 @@ def main() -> int:
 
             if args.refresh or not raw_path.exists():
                 try:
-                    raw = fetch_with_retry(code, adjusted=False, include_meta=True)
+                    raw = fetch_history_with_retry(
+                        bs,
+                        code,
+                        args.start,
+                        args.end,
+                        adjusted=False,
+                        include_meta=True,
+                        sleep_seconds=args.sleep,
+                    )
                     if not raw.empty:
                         _write_qmt_cache(raw, raw_path)
                         raw[["date", "isST", "tradestatus"]].to_parquet(
@@ -137,7 +196,15 @@ def main() -> int:
 
         benchmark_path = front_root / f"{args.benchmark}.parquet"
         if args.refresh or not benchmark_path.exists():
-            benchmark = fetch_with_retry(args.benchmark, adjusted=True, include_meta=False)
+            benchmark = fetch_history_with_retry(
+                bs,
+                args.benchmark,
+                args.start,
+                args.end,
+                adjusted=True,
+                include_meta=False,
+                sleep_seconds=args.sleep,
+            )
             if benchmark.empty:
                 raise RuntimeError(f"BaoStock returned no benchmark data for {args.benchmark}")
             _write_qmt_cache(benchmark, benchmark_path)
