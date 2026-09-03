@@ -12,9 +12,17 @@ on:
           - "20"
           - "50"
           - "200"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/free-data-smoke.yml"
 
 permissions:
   contents: read
+
+env:
+  SMOKE_STOCKS: ${{ inputs.smoke_stocks || '200' }}
 
 jobs:
   baostock-live-smoke:
@@ -33,14 +41,14 @@ jobs:
       - name: Run real BaoStock strict smoke
         run: >-
           python run_free_v4_pipeline.py --stage smoke
-          --smoke-stocks ${{ inputs.smoke_stocks }}
+          --smoke-stocks ${{ env.SMOKE_STOCKS }}
           --min-symbol-coverage 0.98
           --min-session-coverage 0.97
       - name: Upload smoke reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: free-data-live-smoke-${{ inputs.smoke_stocks }}
+          name: free-data-live-smoke-${{ env.SMOKE_STOCKS }}
           path: |
             output/v3_8_1_smoke/
             output/free_v4_pipeline/
