@@ -1,30 +1,12 @@
-# V3.8 Free Data Edition
+# V4.0 Free Data Validation & Baseline
 
-`qmt-quant` can run the complete 2018-2025 research pipeline without a Tushare token and without a local QMT history database.
+`qmt-quant` can build and validate a 2018-2025 SSE/SZSE A-share research database without a Tushare token and without a local QMT history database.
 
 ## Data sources
 
-### BaoStock — primary free source
-
-The downloader uses BaoStock for:
-
-- SSE/SZSE A-share security basics, including IPO/out dates;
-- exchange trading calendar;
-- daily OHLCV / amount / pre-close;
-- front-adjusted signal bars;
-- unadjusted execution/price-limit reference bars;
-- historical `isST`;
-- historical `tradestatus` suspension state.
-
-BaoStock codes are converted to the project's canonical `000001.SZ` / `600000.SH` format.
-
-### AKShare — independent cross-check
-
-AKShare is optional and is not used to select strategy parameters. It samples BaoStock unadjusted close data against `stock_zh_a_hist(adjust="")` and writes a cross-check report.
-
-### QMT — optional final verification
-
-The original QMT loader remains supported. Free-data mode sets `QMT_QUANT_CACHE_ONLY=1`; in that mode missing cache files are reported through coverage gates and the code never silently falls back to `xtquant`.
+- **BaoStock**: primary free source for security basics, IPO/out dates, trading calendar, daily OHLCV/amount/pre-close, adjusted/raw bars, historical `isST` and `tradestatus`.
+- **AKShare**: independent optional cross-check of BaoStock unadjusted closes. It is never used to select strategy parameters.
+- **QMT**: optional final verification source. Free-data pipelines set `QMT_QUANT_CACHE_ONLY=1`, so missing free caches never silently fall back to `xtquant`.
 
 ## Install
 
@@ -32,95 +14,94 @@ The original QMT loader remains supported. Free-data mode sets `QMT_QUANT_CACHE_
 pip install -r requirements.txt
 ```
 
-No token is required for BaoStock or AKShare.
+No BaoStock/AKShare token is required.
 
-## One-command free research
+## Recommended staged workflow
 
-Baseline acceptance target:
-
-```bat
-run_free_research_pipeline.bat
-```
-
-Strict 150x Grade-A gate:
+### V3.8.1 — 200-stock real-data smoke
 
 ```bat
-run_free_research_pipeline_150x.bat
+run_free_smoke_200.bat
 ```
 
-Equivalent Python command:
+Smoke data is isolated under `data/smoke/` and cannot overwrite the full research database. The stage downloads real BaoStock data, optionally cross-checks AKShare, runs the full data audit, executes a strict PIT backtest and validates the backtest output.
+
+### V3.9 — full 2018-2025 A-share database
 
 ```bat
-python run_full_research_pipeline.py ^
-  --data-source baostock ^
-  --prepare-reference ^
-  --start 20180101 ^
-  --end 20251231 ^
-  --profile quick ^
-  --require-grade C
+run_free_full_data.bat
 ```
 
-The first run downloads the historical database and writes it into the same Parquet layout consumed by the existing QMT research stack.
+The downloader is resumable. Existing per-symbol Parquet files are reused unless `--refresh` is supplied. Formal gates default to:
 
-After the first successful download, parameter search, Walk-forward and stress-test phases use local Parquet files only.
+- symbol coverage >= 98%;
+- raw symbol coverage >= 98%;
+- session coverage >= 97%;
+- raw session coverage >= 97%;
+- benchmark present;
+- historical PIT/ST/suspension/limit references present.
 
-## Resume and refresh
-
-The downloader is resumable. Existing per-symbol cache files are reused.
-
-Force a full refresh:
+### V4.0 — first strict baseline
 
 ```bat
-python prepare_free_data.py --refresh
+run_free_baseline.bat
 ```
 
-Small smoke/dev download:
+This stage first re-validates the full database, then runs the existing strategy without parameter optimization. Outputs include the regular `metrics.json`, `yearly_returns.csv`, trades/equity files and a new `baseline_summary.json` with CAGR, multiple, drawdown, Sharpe, Calmar, positive/negative years and whether 150x was actually reached.
+
+### One command for all three stages
 
 ```bat
-python prepare_free_data.py --max-stocks 50
+run_free_v4_pipeline.bat
 ```
 
-Do **not** use `--max-stocks` for final acceptance.
-
-## AKShare cross-check
+Equivalent command:
 
 ```bat
-python prepare_free_data.py --verify-akshare --verify-sample 20
+python run_free_v4_pipeline.py --stage all
 ```
 
-Output: `data/reference/akshare_crosscheck.csv`.
+Use `--refresh` only when you intentionally want to re-download existing cached symbols.
 
-The cross-check compares unadjusted closes so differences in adjustment-factor conventions do not create false mismatches.
+## AKShare policy
+
+AKShare comparison is enabled by default in the staged pipeline. Because a second public endpoint can temporarily be unavailable, it is diagnostic by default. To make it a hard gate:
+
+```bat
+run_free_v4_pipeline.bat --require-akshare
+```
+
+Defaults for a hard gate are at least 5 comparable symbols and >= 80% pass ratio. Change them with `--min-akshare-compared` and `--min-akshare-pass-ratio`.
+
+## Machine-readable validation
+
+Every preparation writes `free_data_manifest.json`. `validate_free_data.py` converts it into `free_data_validation.json` and checks adjusted/raw cache coverage. `run_data_audit.py` independently checks per-symbol and per-session historical coverage, so the manifest cannot certify itself.
+
+The orchestration result is written to:
+
+```text
+output/free_v4_pipeline/pipeline_summary.json
+```
+
+Any required gate failure returns a non-zero process status.
+
+## GitHub live integration smoke
+
+`.github/workflows/free-data-smoke.yml` is a manual live test. From GitHub Actions choose **free-data-live-smoke**, select 20/50/200 symbols and run it. It downloads real BaoStock data on a clean Windows runner and uploads only reports, not the market-data cache.
+
+The ordinary `automated-tests` workflow remains offline and deterministic; a third-party outage therefore cannot make every code push red.
 
 ## Historical price-limit model
 
-BaoStock exposes raw `preclose`, historical ST status and suspension state, but not a ready-made daily up/down-limit table. V3.8 derives executable price-limit references from unadjusted pre-close and the historical board regime used by this strategy:
+BaoStock provides raw `preclose`, historical ST status and suspension state but not a ready-made daily up/down-limit table. The project derives limit references from unadjusted pre-close and historical board rules used by the strategy:
 
 - SSE/SZSE main board: 10%;
 - main-board ST: 5%;
 - STAR Market: 20%;
-- ChiNext: 10% before 2020-08-24, 20% from 2020-08-24.
+- ChiNext: 10% before 2020-08-24 and 20% from 2020-08-24.
 
-Prices are rounded to CNY 0.01 using half-up rounding.
+Prices use CNY 0.01 half-up rounding. The strategy requires a minimum listing age of 120 trading sessions, so IPO no-limit opening days are outside its eligible buy universe.
 
-The strategy already requires a minimum listing age of 120 trading sessions, so IPO no-limit opening days are outside the eligible buy universe. Final production candidates should still be replayed against QMT/broker data before live deployment.
+## What V4.0 does not claim
 
-## Safety and reproducibility
-
-Free-data mode is fail-closed:
-
-```text
-BaoStock download
-  -> canonical Parquet cache
-  -> PIT/ST/suspension/limit references
-  -> data audit
-  -> strict baseline
-  -> V3 parameter research
-  -> V4 Walk-forward
-  -> V4.5 stress tests
-  -> V5 acceptance
-```
-
-If a required symbol is absent, `QMT_QUANT_CACHE_ONLY=1` prevents `xtquant` fallback. Coverage checks decide whether the run is acceptable.
-
-A 150x result is never hard-coded. Grade A still requires the existing return, drawdown, Sharpe, OOS and stress-test gates.
+A 150x result is never hard-coded. V4.0 exists to obtain the first credible baseline from real historical data. Only after that baseline should parameter research, Walk-forward and stress optimization decide whether the strategy is genuinely approaching the 150x Grade-A target.

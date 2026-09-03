@@ -1,0 +1,50 @@
+name: free-data-live-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      smoke_stocks:
+        description: Number of real BaoStock symbols to download
+        required: true
+        default: "50"
+        type: choice
+        options:
+          - "20"
+          - "50"
+          - "200"
+
+permissions:
+  contents: read
+
+jobs:
+  baostock-live-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install live data dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas pyarrow baostock akshare
+      - name: Run real BaoStock strict smoke
+        run: >-
+          python run_free_v4_pipeline.py --stage smoke
+          --smoke-stocks ${{ inputs.smoke_stocks }}
+          --min-symbol-coverage 0.98
+          --min-session-coverage 0.97
+      - name: Upload smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-data-live-smoke-${{ inputs.smoke_stocks }}
+          path: |
+            output/v3_8_1_smoke/
+            output/free_v4_pipeline/
+            data/smoke/reference/free_data_manifest.json
+            data/smoke/reference/free_data_validation.json
+            data/smoke/reference/akshare_crosscheck.csv
+          if-no-files-found: warn
