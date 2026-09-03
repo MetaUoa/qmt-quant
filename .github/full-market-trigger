@@ -1,2 +1,2 @@
-run: 2026-09-03T16:19:00Z
-purpose: v4.1 full-market BaoStock baseline and independent walk-forward after 5-shard reconnect fix
+run: 2026-09-03T22:11:00Z
+purpose: v4.1 full-market BaoStock baseline with 20 deterministic partitions and max-parallel 5
