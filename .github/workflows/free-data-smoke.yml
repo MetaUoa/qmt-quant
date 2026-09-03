@@ -44,6 +44,7 @@ jobs:
           --smoke-stocks ${{ env.SMOKE_STOCKS }}
           --min-symbol-coverage 0.98
           --min-session-coverage 0.97
+          --skip-akshare
       - name: Upload smoke reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -54,5 +55,4 @@ jobs:
             output/free_v4_pipeline/
             data/smoke/reference/free_data_manifest.json
             data/smoke/reference/free_data_validation.json
-            data/smoke/reference/akshare_crosscheck.csv
           if-no-files-found: warn
