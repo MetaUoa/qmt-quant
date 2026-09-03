@@ -1,0 +1,53 @@
+name: free-data-shard14-retry
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/free-data-shard14-retry.yml"
+
+permissions:
+  contents: read
+
+env:
+  DATA_START: "20170101"
+  DATA_END: "20251231"
+  BENCHMARK: "000905.SH"
+  SHARD_COUNT: "20"
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  retry-shard-14:
+    name: Retry BaoStock shard 14
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install shard dependencies
+        run: python -m pip install numpy pandas pyarrow baostock
+      - name: Download shard 14
+        shell: pwsh
+        run: |
+          $root = "data/shards/shard_14"
+          python -u prepare_free_data_shard.py `
+            --start $env:DATA_START `
+            --end $env:DATA_END `
+            --benchmark $env:BENCHMARK `
+            --reference-dir "$root/reference" `
+            --bar-cache-dir "$root/qmt_bars" `
+            --shard-index 14 `
+            --shard-count $env:SHARD_COUNT
+      - name: Upload shard 14
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-data-shard-14-retry
+          path: data/shards/shard_14/
+          if-no-files-found: error
+          retention-days: 3
