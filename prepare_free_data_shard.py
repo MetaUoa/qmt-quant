@@ -108,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reference-dir", required=True)
     p.add_argument("--bar-cache-dir", required=True)
     p.add_argument("--shard-index", type=int, required=True)
-    p.add_argument("--shard-count", type=int, default=5)
+    p.add_argument("--shard-count", type=int, default=20)
     p.add_argument("--sleep", type=float, default=0.02)
     p.add_argument("--refresh", action="store_true")
     return p.parse_args()
