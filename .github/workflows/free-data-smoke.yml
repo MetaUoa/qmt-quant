@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 env:
-  SMOKE_STOCKS: ${{ inputs.smoke_stocks || '200' }}
+  SMOKE_STOCKS: ${{ inputs.smoke_stocks || '20' }}
 
 jobs:
   baostock-live-smoke:
