@@ -1,0 +1,36 @@
+name: free-data-network-diagnostic
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/free-data-network-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Test BaoStock TCP endpoints
+        shell: pwsh
+        run: |
+          @'
+          import socket
+          import sys
+          hosts = ["www.baostock.com", "public-api.baostock.com"]
+          ok = False
+          for host in hosts:
+              try:
+                  ip = socket.gethostbyname(host)
+                  print(f"DNS {host} -> {ip}")
+                  with socket.create_connection((host, 10030), timeout=5):
+                      print(f"TCP PASS {host}:10030")
+                      ok = True
+              except Exception as exc:
+                  print(f"TCP FAIL {host}:10030 -> {type(exc).__name__}: {exc}")
+          sys.exit(0 if ok else 2)
+          '@ | python -u -
