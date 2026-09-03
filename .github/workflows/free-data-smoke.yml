@@ -23,11 +23,13 @@ permissions:
 
 env:
   SMOKE_STOCKS: ${{ inputs.smoke_stocks || '5' }}
+  BAOSTOCK_SERVER_IP: public-api.baostock.com
+  BAOSTOCK_SERVER_PORT: "10030"
 
 jobs:
   baostock-live-smoke:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
