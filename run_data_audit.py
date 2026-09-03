@@ -25,6 +25,27 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def count_observed_sessions(
+    frame: pd.DataFrame | None,
+    expected_days: pd.DatetimeIndex,
+    column: str,
+) -> int:
+    """Count valid observations only on sessions that belong in the denominator.
+
+    BaoStock can return placeholder rows for suspended sessions.  The audit removes
+    those sessions from ``expected_days`` using ``suspend_d.parquet``; therefore the
+    numerator must use the same session set or coverage can incorrectly exceed 100%.
+    """
+    if frame is None or frame.empty or column not in frame or len(expected_days) == 0:
+        return 0
+    index = pd.DatetimeIndex(frame.index).normalize()
+    values = pd.to_numeric(frame[column], errors="coerce")
+    valid = pd.Series(values.notna().to_numpy(), index=index)
+    valid = valid.groupby(level=0).max()
+    expected = pd.DatetimeIndex(expected_days).normalize().unique()
+    return int(valid.reindex(expected, fill_value=False).sum())
+
+
 def main() -> int:
     args = parse_args()
     data = DataConfig(
@@ -67,30 +88,41 @@ def main() -> int:
         if not susp.empty and "ts_code" in susp.columns and "trade_date" in susp.columns:
             if "suspend_type" in susp.columns:
                 susp = susp.loc[susp["suspend_type"].astype(str).str.upper().eq("S")]
-            text = susp["trade_date"].astype("string").str.replace(r"[^0-9]", "", regex=True).str.slice(0, 8)
-            susp = susp.assign(_date=pd.to_datetime(text, format="%Y%m%d", errors="coerce")).dropna(subset=["_date"])
+            text = (
+                susp["trade_date"]
+                .astype("string")
+                .str.replace(r"[^0-9]", "", regex=True)
+                .str.slice(0, 8)
+            )
+            susp = susp.assign(
+                _date=pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+            ).dropna(subset=["_date"])
             for code, group in susp.groupby("ts_code"):
                 suspend_map[str(code)] = set(pd.DatetimeIndex(group["_date"]).normalize())
     suspension_reference_enabled = bool(suspend_path.exists())
+
     rows = []
     for code in universe:
         row = basic.loc[code] if code in basic.index else None
-        list_date = pd.Timestamp(row["list_date"]) if row is not None and pd.notna(row["list_date"]) else start
-        delist_date = pd.Timestamp(row["delist_date"]) if row is not None and pd.notna(row["delist_date"]) else end
+        list_date = (
+            pd.Timestamp(row["list_date"])
+            if row is not None and pd.notna(row["list_date"])
+            else start
+        )
+        delist_date = (
+            pd.Timestamp(row["delist_date"])
+            if row is not None and pd.notna(row["delist_date"])
+            else end
+        )
         left, right = max(start, list_date), min(end, delist_date)
         expected_days = calendar[(calendar >= left) & (calendar <= right)]
         if code in suspend_map:
             blocked = suspend_map[code]
             expected_days = pd.DatetimeIndex([d for d in expected_days if d not in blocked])
         expected = int(len(expected_days))
-        frame = bars.get(code)
-        observed = 0
-        if frame is not None and not frame.empty and "close" in frame:
-            observed = int(pd.to_numeric(frame.loc[(frame.index >= left) & (frame.index <= right), "close"], errors="coerce").notna().sum())
-        raw_frame = raw.get(code)
-        raw_observed = 0
-        if raw_frame is not None and not raw_frame.empty:
-            raw_observed = int(pd.to_numeric(raw_frame.loc[(raw_frame.index >= left) & (raw_frame.index <= right), "open"], errors="coerce").notna().sum())
+
+        observed = count_observed_sessions(bars.get(code), expected_days, "close")
+        raw_observed = count_observed_sessions(raw.get(code), expected_days, "open")
         rows.append(
             {
                 "code": code,
@@ -103,13 +135,26 @@ def main() -> int:
                 "raw_loaded": raw_observed > 0,
             }
         )
+
     detail = pd.DataFrame(rows)
     symbol_coverage = float(detail["loaded"].mean()) if len(detail) else 0.0
     raw_symbol_coverage = float(detail["raw_loaded"].mean()) if len(detail) else 0.0
-    session_coverage = float(detail["observed_sessions"].sum() / max(detail["expected_sessions"].sum(), 1)) if len(detail) else 0.0
-    raw_session_coverage = float(detail["raw_observed_sessions"].sum() / max(detail["expected_sessions"].sum(), 1)) if len(detail) else 0.0
-    low = detail.loc[detail["session_coverage"] < args.min_session_coverage].sort_values("session_coverage")
-    raw_low = detail.loc[detail["raw_session_coverage"] < args.min_session_coverage].sort_values("raw_session_coverage")
+    session_coverage = (
+        float(detail["observed_sessions"].sum() / max(detail["expected_sessions"].sum(), 1))
+        if len(detail)
+        else 0.0
+    )
+    raw_session_coverage = (
+        float(detail["raw_observed_sessions"].sum() / max(detail["expected_sessions"].sum(), 1))
+        if len(detail)
+        else 0.0
+    )
+    low = detail.loc[detail["session_coverage"] < args.min_session_coverage].sort_values(
+        "session_coverage"
+    )
+    raw_low = detail.loc[
+        detail["raw_session_coverage"] < args.min_session_coverage
+    ].sort_values("raw_session_coverage")
 
     report = {
         "start": args.start,
@@ -132,9 +177,16 @@ def main() -> int:
     session_gate = (
         session_coverage >= args.min_session_coverage
         and raw_session_coverage >= args.min_session_coverage
-    ) if suspension_reference_enabled else True
-    report["warning"] = None if suspension_reference_enabled else (
-        "suspend_d.parquet is missing; session-coverage ratios are diagnostic only because legitimate suspension days cannot be removed."
+        if suspension_reference_enabled
+        else True
+    )
+    report["warning"] = (
+        None
+        if suspension_reference_enabled
+        else (
+            "suspend_d.parquet is missing; session-coverage ratios are diagnostic only "
+            "because legitimate suspension days cannot be removed."
+        )
     )
     report["passed"] = bool(
         report["benchmark_loaded"]
@@ -148,7 +200,9 @@ def main() -> int:
     detail.to_csv(out / "symbol_session_coverage.csv", index=False, encoding="utf-8-sig")
     low.to_csv(out / "low_coverage_symbols.csv", index=False, encoding="utf-8-sig")
     raw_low.to_csv(out / "low_raw_coverage_symbols.csv", index=False, encoding="utf-8-sig")
-    (out / "data_audit.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out / "data_audit.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["passed"] else 2
 
