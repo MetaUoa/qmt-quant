@@ -1,0 +1,140 @@
+name: free-data-full-market
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/full-market-trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: free-data-full-market-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DATA_START: "20170101"
+  TRADE_START: "20180101"
+  DATA_END: "20251231"
+  BENCHMARK: "000905.SH"
+  SHARD_COUNT: "20"
+
+jobs:
+  shard:
+    name: BaoStock shard ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install shard dependencies
+        run: python -m pip install numpy pandas pyarrow baostock
+      - name: Download deterministic historical shard
+        shell: pwsh
+        run: |
+          $root = "data/shards/shard_${{ matrix.shard }}"
+          python -u prepare_free_data_shard.py `
+            --start $env:DATA_START `
+            --end $env:DATA_END `
+            --benchmark $env:BENCHMARK `
+            --reference-dir "$root/reference" `
+            --bar-cache-dir "$root/qmt_bars" `
+            --shard-index ${{ matrix.shard }} `
+            --shard-count $env:SHARD_COUNT
+      - name: Upload shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-data-shard-${{ matrix.shard }}
+          path: data/shards/shard_${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 3
+
+  merge-and-research:
+    name: Merge, audit, baseline and independent walk-forward
+    needs: shard
+    runs-on: windows-latest
+    timeout-minutes: 300
+    env:
+      QMT_QUANT_CACHE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install research dependencies
+        run: python -m pip install numpy pandas pyarrow
+      - name: Download all shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: free-data-shard-*
+          path: downloaded-shards
+      - name: Merge shard caches and PIT references
+        run: >-
+          python merge_free_data_shards.py
+          --input downloaded-shards
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+      - name: Full historical data audit
+        run: >-
+          python run_data_audit.py
+          --start 20170101
+          --end 20251231
+          --benchmark 000905.SH
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+          --output output/v4_1_full_market/data_audit
+          --min-symbol-coverage 0.98
+          --min-session-coverage 0.97
+      - name: Strict 2018-2025 full-market baseline
+        run: >-
+          python run_window_baseline.py
+          --data-start 20170101
+          --trade-start 20180101
+          --end 20251231
+          --benchmark 000905.SH
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+          --output output/v4_1_full_market/baseline
+          --min-symbol-coverage 0.98
+      - name: Validate baseline artifacts
+        run: >-
+          python validate_backtest_output.py
+          output/v4_1_full_market/baseline
+          --min-symbol-coverage 0.98
+      - name: Independent reset-capital walk-forward
+        run: >-
+          python run_walk_forward.py
+          --data-start 20170101
+          --start 20180101
+          --end 20251231
+          --benchmark 000905.SH
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+          --output output/v4_1_full_market/walk_forward
+          --strict-reference
+          --top-n-grid 5,8,12
+          --rebalance-grid 5,10
+          --min-momentum-grid 0.00,0.02
+          --min-breadth-grid 0.00,0.45
+          --max-train-drawdown 0.65
+      - name: Upload full-market research reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmt-full-market-v4-1-results
+          path: |
+            output/v4_1_full_market/
+            data/reference/free_data_manifest.json
+          if-no-files-found: error
+          retention-days: 30
