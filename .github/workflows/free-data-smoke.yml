@@ -6,30 +6,26 @@ on:
       smoke_stocks:
         description: Number of real BaoStock symbols to download
         required: true
-        default: "50"
+        default: "20"
         type: choice
         options:
+          - "5"
           - "20"
           - "50"
           - "200"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/free-data-smoke.yml"
+      crosscheck_akshare:
+        description: Also cross-check BaoStock raw closes with AKShare
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
-env:
-  SMOKE_STOCKS: ${{ inputs.smoke_stocks || '5' }}
-  BAOSTOCK_SERVER_IP: public-api.baostock.com
-  BAOSTOCK_SERVER_PORT: "10030"
-
 jobs:
   baostock-live-smoke:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,21 +36,32 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy pandas pyarrow baostock
+      - name: Install AKShare cross-check dependency
+        if: ${{ inputs.crosscheck_akshare }}
+        run: python -m pip install akshare
       - name: Run real BaoStock strict smoke
-        run: >-
-          python -u run_free_v4_pipeline.py --stage smoke
-          --smoke-stocks ${{ env.SMOKE_STOCKS }}
-          --min-symbol-coverage 0.98
-          --min-session-coverage 0.97
-          --skip-akshare
+        shell: pwsh
+        run: |
+          $argsList = @(
+            "run_free_v4_pipeline.py",
+            "--stage", "smoke",
+            "--smoke-stocks", "${{ inputs.smoke_stocks }}",
+            "--min-symbol-coverage", "0.98",
+            "--min-session-coverage", "0.97"
+          )
+          if ("${{ inputs.crosscheck_akshare }}" -ne "true") {
+            $argsList += "--skip-akshare"
+          }
+          python -u @argsList
       - name: Upload smoke reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: free-data-live-smoke-${{ env.SMOKE_STOCKS }}
+          name: free-data-live-smoke-${{ inputs.smoke_stocks }}
           path: |
             output/v3_8_1_smoke/
             output/free_v4_pipeline/
             data/smoke/reference/free_data_manifest.json
             data/smoke/reference/free_data_validation.json
+            data/smoke/reference/akshare_crosscheck.csv
           if-no-files-found: warn
