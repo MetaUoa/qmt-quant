@@ -1,5 +1,5 @@
 name: free-data-shard13-recovery
-# retrigger: BaoStock socketpool timeout 20260904-1451
+# retrigger: BaoStock 0.9.3 context socket timeout 20260904-1503
 
 on:
   workflow_dispatch:
@@ -36,7 +36,7 @@ jobs:
           cache: pip
       - name: Install shard dependencies
         run: python -m pip install numpy pandas pyarrow baostock
-      - name: Download shard 13 with bounded socketpool stalls
+      - name: Download shard 13 with bounded BaoStock context socket
         shell: pwsh
         run: |
           $root = "data/shards/shard_13"
