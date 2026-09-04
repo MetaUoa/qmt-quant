@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 from pathlib import Path
 import socket
@@ -59,14 +60,41 @@ def _configure_socket_timeout(timeout_seconds: float) -> None:
     socket.setdefaulttimeout(timeout_seconds)
 
 
-def _bind_baostock_socket_timeout(api, timeout_seconds: float) -> None:
+def _install_baostock_connector_timeout(timeout_seconds: float) -> None:
+    """Ensure every BaoStock 0.9.3 socketpool connection gets a recv timeout.
+
+    BaoStock 0.9.3 creates its TCP sockets lazily inside socketpool.TcpConnector,
+    so there is no stable ``baostock._bs_socket`` to mutate after login. Replacing
+    BaoStock's local TcpConnector reference before login also covers every new
+    pool created by later reconnects.
+    """
     if timeout_seconds <= 0:
         raise ValueError("socket_timeout must be > 0")
-    active_socket = getattr(api, "_bs_socket", None)
-    settimeout = getattr(active_socket, "settimeout", None)
-    if not callable(settimeout):
-        raise RuntimeError("BaoStock active socket is unavailable for timeout binding")
-    settimeout(timeout_seconds)
+
+    socketutil = importlib.import_module("baostock.util.socketutil")
+    original = getattr(socketutil, "_qmt_original_tcp_connector", None)
+    if original is None:
+        original = getattr(socketutil, "TcpConnector", None)
+        if original is None:
+            raise RuntimeError("BaoStock TcpConnector is unavailable for timeout binding")
+        setattr(socketutil, "_qmt_original_tcp_connector", original)
+
+    class BoundedTcpConnector(original):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            active_socket = getattr(self, "_s", None)
+            settimeout = getattr(active_socket, "settimeout", None)
+            if not callable(settimeout):
+                try:
+                    self.invalidate()
+                except Exception:
+                    pass
+                raise RuntimeError("BaoStock TcpConnector socket is unavailable for timeout binding")
+            settimeout(timeout_seconds)
+
+    BoundedTcpConnector.__name__ = "QmtBoundedTcpConnector"
+    BoundedTcpConnector.__qualname__ = "QmtBoundedTcpConnector"
+    socketutil.TcpConnector = BoundedTcpConnector
 
 
 def _reconnect_baostock(api, *, socket_timeout_seconds: float) -> None:
@@ -74,13 +102,13 @@ def _reconnect_baostock(api, *, socket_timeout_seconds: float) -> None:
         api.logout()
     except Exception:
         pass
+    _install_baostock_connector_timeout(socket_timeout_seconds)
     login = api.login()
     if str(getattr(login, "error_code", "0")) != "0":
         raise RuntimeError(
             f"BaoStock reconnect failed: {getattr(login, 'error_code', '')} "
             f"{getattr(login, 'error_msg', '')}".strip()
         )
-    _bind_baostock_socket_timeout(api, socket_timeout_seconds)
 
 
 def fetch_history_with_retry(
@@ -138,6 +166,7 @@ def main() -> int:
     _configure_utf8_console()
     args = parse_args()
     _configure_socket_timeout(args.socket_timeout)
+    _install_baostock_connector_timeout(args.socket_timeout)
     ref_root = Path(args.reference_dir)
     cache_root = Path(args.bar_cache_dir)
     front_root = cache_root / f"front_{args.start}_{args.end}"
@@ -150,7 +179,6 @@ def main() -> int:
     raw_meta: dict[str, pd.DataFrame] = {}
 
     with baostock_session() as bs:
-        _bind_baostock_socket_timeout(bs, args.socket_timeout)
         all_basic = active_in_range(fetch_stock_basic(bs), args.start, args.end)
         total_symbols = len(all_basic)
         basic = select_stock_shard(all_basic, args.shard_index, args.shard_count)
