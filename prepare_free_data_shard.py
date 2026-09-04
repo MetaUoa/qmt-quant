@@ -59,7 +59,17 @@ def _configure_socket_timeout(timeout_seconds: float) -> None:
     socket.setdefaulttimeout(timeout_seconds)
 
 
-def _reconnect_baostock(api) -> None:
+def _bind_baostock_socket_timeout(api, timeout_seconds: float) -> None:
+    if timeout_seconds <= 0:
+        raise ValueError("socket_timeout must be > 0")
+    active_socket = getattr(api, "_bs_socket", None)
+    settimeout = getattr(active_socket, "settimeout", None)
+    if not callable(settimeout):
+        raise RuntimeError("BaoStock active socket is unavailable for timeout binding")
+    settimeout(timeout_seconds)
+
+
+def _reconnect_baostock(api, *, socket_timeout_seconds: float) -> None:
     try:
         api.logout()
     except Exception:
@@ -70,6 +80,7 @@ def _reconnect_baostock(api) -> None:
             f"BaoStock reconnect failed: {getattr(login, 'error_code', '')} "
             f"{getattr(login, 'error_msg', '')}".strip()
         )
+    _bind_baostock_socket_timeout(api, socket_timeout_seconds)
 
 
 def fetch_history_with_retry(
@@ -82,6 +93,7 @@ def fetch_history_with_retry(
     include_meta: bool,
     attempts: int = 4,
     sleep_seconds: float = 0.5,
+    socket_timeout_seconds: float = 45.0,
     fetcher: Callable | None = None,
 ) -> pd.DataFrame:
     if attempts < 1:
@@ -102,7 +114,7 @@ def fetch_history_with_retry(
             last = exc
             if attempt >= attempts - 1:
                 break
-            _reconnect_baostock(api)
+            _reconnect_baostock(api, socket_timeout_seconds=socket_timeout_seconds)
             time.sleep(max(0.5, sleep_seconds) * (2 ** attempt))
     raise RuntimeError(f"{code} history fetch failed after retries: {last}") from last
 
@@ -138,6 +150,7 @@ def main() -> int:
     raw_meta: dict[str, pd.DataFrame] = {}
 
     with baostock_session() as bs:
+        _bind_baostock_socket_timeout(bs, args.socket_timeout)
         all_basic = active_in_range(fetch_stock_basic(bs), args.start, args.end)
         total_symbols = len(all_basic)
         basic = select_stock_shard(all_basic, args.shard_index, args.shard_count)
@@ -161,6 +174,7 @@ def main() -> int:
                         adjusted=True,
                         include_meta=False,
                         sleep_seconds=args.sleep,
+                        socket_timeout_seconds=args.socket_timeout,
                     )
                     if not frame.empty:
                         _write_qmt_cache(frame, front_path)
@@ -179,6 +193,7 @@ def main() -> int:
                         adjusted=False,
                         include_meta=True,
                         sleep_seconds=args.sleep,
+                        socket_timeout_seconds=args.socket_timeout,
                     )
                     if not raw.empty:
                         _write_qmt_cache(raw, raw_path)
@@ -213,6 +228,7 @@ def main() -> int:
                 adjusted=True,
                 include_meta=False,
                 sleep_seconds=args.sleep,
+                socket_timeout_seconds=args.socket_timeout,
             )
             if benchmark.empty:
                 raise RuntimeError(f"BaoStock returned no benchmark data for {args.benchmark}")
