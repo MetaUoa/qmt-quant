@@ -1,4 +1,5 @@
 name: free-data-shard13-recovery
+# retrigger: BaoStock timeout rebind c17d3a00
 
 on:
   workflow_dispatch:
@@ -16,11 +17,11 @@ env:
   DATA_START: "20170101"
   TRADE_START: "20180101"
   DATA_END: "20251231"
-  BENCHMARK: "000905.SH"
+  BENCHMARK: 000905.SH
   SHARD_COUNT: "20"
   SOURCE_RUN_ID: "33811845110"
   PYTHONUTF8: "1"
-  PYTHONIOENCODING: "utf-8"
+  PYTHONIOENCODING: utf-8
 
 jobs:
   retry-shard-13:
