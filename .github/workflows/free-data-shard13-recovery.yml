@@ -1,5 +1,5 @@
 name: free-data-shard13-recovery
-# retrigger: BaoStock timeout rebind c17d3a00
+# retrigger: BaoStock socketpool timeout 58120907
 
 on:
   workflow_dispatch:
