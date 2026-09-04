@@ -21,40 +21,34 @@ jobs:
           python-version: "3.11"
       - name: Install exact BaoStock
         run: python -m pip install baostock==0.9.3
-      - name: Inspect installed transport structure
+      - name: Inspect installed BaoStock transport source
         shell: pwsh
         run: |
           @'
+          import importlib.metadata
           import inspect
-          import socketpool
+          from pathlib import Path
           import baostock
           import baostock.util.socketutil as su
           import baostock.common.context as ctx
+          print("BAOSTOCK_VERSION", importlib.metadata.version("baostock"))
           print("BAOSTOCK_FILE", baostock.__file__)
           print("SOCKETUTIL_FILE", su.__file__)
           print("SOCKETUTIL_ATTRS", sorted(x for x in dir(su) if "socket" in x.lower() or "connect" in x.lower() or "pool" in x.lower()))
-          print("SOCKETPOOL_FILE", socketpool.__file__)
-          print("SOCKETPOOL_ATTRS", sorted(x for x in dir(socketpool) if "socket" in x.lower() or "connect" in x.lower() or "pool" in x.lower()))
-          print("CONNECT_SOURCE_BEGIN")
-          print(inspect.getsource(su.SocketUtil.connect))
-          print("CONNECT_SOURCE_END")
-          print("SEND_MSG_SOURCE_BEGIN")
-          print(inspect.getsource(su.send_msg))
-          print("SEND_MSG_SOURCE_END")
           print("CONTEXT_ATTRS", sorted(x for x in dir(ctx) if "socket" in x.lower() or "connect" in x.lower() or "pool" in x.lower()))
-          for module_name in ["socketpool.pool", "socketpool.conn", "socketpool.backend_thread"]:
-              try:
-                  mod = __import__(module_name, fromlist=["*"])
-                  print("MODULE", module_name, getattr(mod, "__file__", None))
-                  print("ATTRS", sorted(x for x in dir(mod) if "socket" in x.lower() or "connect" in x.lower() or "pool" in x.lower()))
-                  for symbol in ["TcpConnector", "ConnectionPool", "Socket"]:
-                      obj = getattr(mod, symbol, None)
-                      if obj is not None:
-                          try:
-                              print("SOURCE", module_name, symbol)
-                              print(inspect.getsource(obj))
-                          except Exception as exc:
-                              print("SOURCE_ERROR", module_name, symbol, repr(exc))
-              except Exception as exc:
-                  print("MODULE_ERROR", module_name, repr(exc))
+          print("SOCKETUTIL_SOURCE_BEGIN")
+          print(Path(su.__file__).read_text(encoding="utf-8", errors="replace"))
+          print("SOCKETUTIL_SOURCE_END")
+          try:
+              print("CONNECT_SOURCE_BEGIN")
+              print(inspect.getsource(su.SocketUtil.connect))
+              print("CONNECT_SOURCE_END")
+          except Exception as exc:
+              print("CONNECT_SOURCE_ERROR", repr(exc))
+          try:
+              print("SEND_MSG_SOURCE_BEGIN")
+              print(inspect.getsource(su.send_msg))
+              print("SEND_MSG_SOURCE_END")
+          except Exception as exc:
+              print("SEND_MSG_SOURCE_ERROR", repr(exc))
           '@ | python -
