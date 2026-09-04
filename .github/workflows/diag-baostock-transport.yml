@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 jobs:
   inspect:
     runs-on: windows-latest
@@ -31,24 +35,24 @@ jobs:
           import baostock
           import baostock.util.socketutil as su
           import baostock.common.context as ctx
+          def escaped(value):
+              return str(value).encode("unicode_escape", errors="backslashreplace").decode("ascii")
           print("BAOSTOCK_VERSION", importlib.metadata.version("baostock"))
           print("BAOSTOCK_FILE", baostock.__file__)
           print("SOCKETUTIL_FILE", su.__file__)
           print("SOCKETUTIL_ATTRS", sorted(x for x in dir(su) if "socket" in x.lower() or "connect" in x.lower() or "pool" in x.lower()))
           print("CONTEXT_ATTRS", sorted(x for x in dir(ctx) if "socket" in x.lower() or "connect" in x.lower() or "pool" in x.lower()))
           print("SOCKETUTIL_SOURCE_BEGIN")
-          print(Path(su.__file__).read_text(encoding="utf-8", errors="replace"))
+          print(escaped(Path(su.__file__).read_text(encoding="utf-8", errors="replace")))
           print("SOCKETUTIL_SOURCE_END")
-          try:
-              print("CONNECT_SOURCE_BEGIN")
-              print(inspect.getsource(su.SocketUtil.connect))
-              print("CONNECT_SOURCE_END")
-          except Exception as exc:
-              print("CONNECT_SOURCE_ERROR", repr(exc))
-          try:
-              print("SEND_MSG_SOURCE_BEGIN")
-              print(inspect.getsource(su.send_msg))
-              print("SEND_MSG_SOURCE_END")
-          except Exception as exc:
-              print("SEND_MSG_SOURCE_ERROR", repr(exc))
+          for label, obj in [
+              ("SOCKETUTIL_CLASS", su.SocketUtil),
+              ("GET_DEFAULT_SOCKET", su.get_default_socket),
+          ]:
+              try:
+                  print(label + "_SOURCE_BEGIN")
+                  print(escaped(inspect.getsource(obj)))
+                  print(label + "_SOURCE_END")
+              except Exception as exc:
+                  print(label + "_SOURCE_ERROR", repr(exc))
           '@ | python -
