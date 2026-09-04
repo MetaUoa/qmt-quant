@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from prepare_free_data_shard import fetch_history_with_retry
+from prepare_free_data_shard import _configure_socket_timeout, fetch_history_with_retry
 
 
 class FakeBaoStock:
@@ -20,6 +20,17 @@ class FakeBaoStock:
     def logout(self):
         self.logouts += 1
         return SimpleNamespace(error_code="0", error_msg="")
+
+
+def test_socket_timeout_bounds_network_stalls(monkeypatch):
+    configured: list[float] = []
+    monkeypatch.setattr("prepare_free_data_shard.socket.setdefaulttimeout", configured.append)
+
+    _configure_socket_timeout(45.0)
+
+    assert configured == [45.0]
+    with pytest.raises(ValueError, match="socket_timeout must be > 0"):
+        _configure_socket_timeout(0)
 
 
 def test_retry_reconnects_after_transient_reset(monkeypatch):
