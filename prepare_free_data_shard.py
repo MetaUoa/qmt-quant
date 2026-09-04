@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import socket
 import sys
 import time
 from typing import Callable
@@ -50,6 +51,12 @@ def _configure_utf8_console() -> None:
                 reconfigure(encoding="utf-8", errors="backslashreplace")
             except (AttributeError, ValueError):
                 pass
+
+
+def _configure_socket_timeout(timeout_seconds: float) -> None:
+    if timeout_seconds <= 0:
+        raise ValueError("socket_timeout must be > 0")
+    socket.setdefaulttimeout(timeout_seconds)
 
 
 def _reconnect_baostock(api) -> None:
@@ -110,6 +117,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--shard-index", type=int, required=True)
     p.add_argument("--shard-count", type=int, default=20)
     p.add_argument("--sleep", type=float, default=0.02)
+    p.add_argument("--socket-timeout", type=float, default=45.0)
     p.add_argument("--refresh", action="store_true")
     return p.parse_args()
 
@@ -117,6 +125,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     _configure_utf8_console()
     args = parse_args()
+    _configure_socket_timeout(args.socket_timeout)
     ref_root = Path(args.reference_dir)
     cache_root = Path(args.bar_cache_dir)
     front_root = cache_root / f"front_{args.start}_{args.end}"
