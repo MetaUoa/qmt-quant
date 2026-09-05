@@ -31,7 +31,7 @@ env:
 jobs:
   research:
     name: Strict nested V5 C7 stability research
-    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'research: run V5-C7 nested stability') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'V5-C7 nested stability') }}
     runs-on: windows-latest
     timeout-minutes: 300
     steps:
