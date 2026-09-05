@@ -9,7 +9,7 @@ def test_c_nested_workflow_reuses_frozen_data_and_strict_exposures():
     assert 'EXPOSURE_RUN_ID: "33963211771"' in text
     assert 'QMT_QUANT_CACHE_ONLY: "1"' in text
     assert "workflow_run:" in text
-    assert "- v5-pit-exposures" in text
+    assert "- v5-pit-industry-recovery" in text
     assert "- completed" in text
     assert "github.event.workflow_run.conclusion == 'success'" in text
     assert "push:" not in text
@@ -17,6 +17,7 @@ def test_c_nested_workflow_reuses_frozen_data_and_strict_exposures():
     assert "Download recovered shard 13" in text
     assert "Expected exactly 20 historical shard manifests" in text
     assert "Expected exactly 20 PIT exposure manifests" in text
+    assert "Recovered PIT industry snapshots are not strict-ready" in text
     assert "--min-symbol-coverage 0.98" in text
     assert "--min-session-coverage 0.97" in text
     assert "run_v5_c_nested_research.py" in text
