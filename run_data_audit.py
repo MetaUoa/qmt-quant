@@ -7,7 +7,15 @@ from pathlib import Path
 import pandas as pd
 
 from qmt_quant.config import DataConfig
-from qmt_quant.qmt_data import download_daily_history, load_daily_bars, load_limit_reference_bars
+from qmt_quant.market_data_quality import (
+    audit_bar_collection,
+    audit_limit_reference_table,
+)
+from qmt_quant.qmt_data import (
+    download_daily_history,
+    load_daily_bars,
+    load_limit_reference_bars,
+)
 from qmt_quant.reference_data import ReferenceData
 
 
@@ -32,7 +40,7 @@ def count_observed_sessions(
 ) -> int:
     """Count valid observations only on sessions that belong in the denominator.
 
-    BaoStock can return placeholder rows for suspended sessions.  The audit removes
+    BaoStock can return placeholder rows for suspended sessions. The audit removes
     those sessions from ``expected_days`` using ``suspend_d.parquet``; therefore the
     numerator must use the same session set or coverage can incorrectly exceed 100%.
     """
@@ -44,6 +52,31 @@ def count_observed_sessions(
     valid = valid.groupby(level=0).max()
     expected = pd.DatetimeIndex(expected_days).normalize().unique()
     return int(valid.reindex(expected, fill_value=False).sum())
+
+
+def _load_optional_reference_table(root: Path, stem: str) -> pd.DataFrame:
+    for suffix in (".parquet", ".csv"):
+        path = root / f"{stem}{suffix}"
+        if path.exists():
+            return pd.read_parquet(path) if suffix == ".parquet" else pd.read_csv(path)
+    return pd.DataFrame()
+
+
+def _legacy_sentinel_summary(root: Path, stem: str) -> dict:
+    frame = _load_optional_reference_table(root, stem)
+    if frame.empty or "ts_code" not in frame.columns:
+        return {"rows": 0, "dates": 0}
+    sentinel = frame.loc[frame["ts_code"].astype(str).eq("__NONE__")]
+    dates = 0
+    if "trade_date" in sentinel.columns and not sentinel.empty:
+        text = (
+            sentinel["trade_date"]
+            .astype("string")
+            .str.replace(r"[^0-9]", "", regex=True)
+            .str.slice(0, 8)
+        )
+        dates = int(text.dropna().nunique())
+    return {"rows": int(len(sentinel)), "dates": dates}
 
 
 def main() -> int:
@@ -81,7 +114,8 @@ def main() -> int:
     end = pd.Timestamp(args.end)
     calendar = ref.calendar[(ref.calendar >= start) & (ref.calendar <= end)]
     basic = ref.stock_basic.set_index("ts_code", drop=False)
-    suspend_path = Path(args.reference_dir) / "suspend_d.parquet"
+    reference_root = Path(args.reference_dir)
+    suspend_path = reference_root / "suspend_d.parquet"
     suspend_map: dict[str, set[pd.Timestamp]] = {}
     if suspend_path.exists():
         susp = pd.read_parquet(suspend_path)
@@ -156,6 +190,34 @@ def main() -> int:
         detail["raw_session_coverage"] < args.min_session_coverage
     ].sort_values("raw_session_coverage")
 
+    adjusted_quality, adjusted_quality_detail = audit_bar_collection(
+        bars,
+        label="adjusted",
+        require_ohlc=True,
+        excluded_dates_by_code=suspend_map,
+    )
+    raw_quality, raw_quality_detail = audit_bar_collection(
+        raw,
+        label="raw_limit_reference",
+        require_ohlc=False,
+        excluded_dates_by_code=suspend_map,
+    )
+    limit_quality = audit_limit_reference_table(ref.limits)
+
+    st_sentinel = _legacy_sentinel_summary(reference_root, "stock_st")
+    limit_sentinel = _legacy_sentinel_summary(reference_root, "stk_limit")
+    reference_provenance = {
+        "legacy_st_empty_response_sentinel": st_sentinel,
+        "legacy_limit_empty_response_sentinel": limit_sentinel,
+        "legacy_sentinel_semantics": (
+            "__NONE__ records a successful provider call that returned an empty frame; "
+            "it is legacy query-state provenance and must never be treated as a real symbol"
+        ),
+        "explicit_zero_state_manifest_present": bool(
+            (reference_root / "reference_query_state.json").exists()
+        ),
+    }
+
     report = {
         "start": args.start,
         "end": args.end,
@@ -168,6 +230,12 @@ def main() -> int:
         "low_raw_coverage_symbols": int(len(raw_low)),
         "benchmark_loaded": bool(data.benchmark in bars and not bars[data.benchmark].empty),
         "reference_audit": ref.audit().__dict__,
+        "reference_provenance": reference_provenance,
+        "market_data_quality": {
+            "adjusted": adjusted_quality.to_dict(),
+            "raw_limit_reference": raw_quality.to_dict(),
+            "price_limits": limit_quality.to_dict(),
+        },
         "suspension_reference_enabled": suspension_reference_enabled,
         "thresholds": {
             "min_symbol_coverage": args.min_symbol_coverage,
@@ -188,11 +256,17 @@ def main() -> int:
             "because legitimate suspension days cannot be removed."
         )
     )
+    quality_gate = bool(
+        adjusted_quality.passed
+        and raw_quality.passed
+        and limit_quality.passed
+    )
     report["passed"] = bool(
         report["benchmark_loaded"]
         and symbol_coverage >= args.min_symbol_coverage
         and raw_symbol_coverage >= args.min_symbol_coverage
         and session_gate
+        and quality_gate
     )
 
     out = Path(args.output)
@@ -200,6 +274,10 @@ def main() -> int:
     detail.to_csv(out / "symbol_session_coverage.csv", index=False, encoding="utf-8-sig")
     low.to_csv(out / "low_coverage_symbols.csv", index=False, encoding="utf-8-sig")
     raw_low.to_csv(out / "low_raw_coverage_symbols.csv", index=False, encoding="utf-8-sig")
+    pd.concat(
+        [adjusted_quality_detail, raw_quality_detail],
+        ignore_index=True,
+    ).to_csv(out / "market_data_quality.csv", index=False, encoding="utf-8-sig")
     (out / "data_audit.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
