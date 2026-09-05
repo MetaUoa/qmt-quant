@@ -2,14 +2,6 @@ name: v5-pit-exposures
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "qmt_quant/pit_exposures.py"
-      - "prepare_pit_exposure_shard.py"
-      - "prepare_pit_industry.py"
-      - ".github/workflows/v5-pit-exposures.yml"
 
 permissions:
   contents: read
