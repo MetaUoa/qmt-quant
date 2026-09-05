@@ -1,0 +1,160 @@
+name: v5-c7-nested-research
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: v5-c7-nested-research-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DATA_START: "20170101"
+  TRADE_START: "20180101"
+  DATA_END: "20251231"
+  BENCHMARK: "000905.SH"
+  SHARD_COUNT: "20"
+  SOURCE_RUN_ID: "33811845110"
+  RECOVERY_RUN_ID: "33887254974"
+  EXPOSURE_RUN_ID: "33963211771"
+  INDUSTRY_RUN_ID: "33969253365"
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+  QMT_QUANT_CACHE_ONLY: "1"
+
+jobs:
+  research:
+    name: Strict nested V5 C7 stability research
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'research: run V5-C7 nested stability') }}
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install research dependencies
+        run: python -m pip install numpy pandas pyarrow
+
+      - name: Download successful frozen historical shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: free-data-shard-*
+          path: downloaded-shards
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+      - name: Remove stale shard 13 from source run
+        shell: pwsh
+        run: |
+          $stale = "downloaded-shards/free-data-shard-13"
+          if (Test-Path $stale) { Remove-Item -Recurse -Force $stale }
+      - name: Download recovered shard 13
+        uses: actions/download-artifact@v4
+        with:
+          name: free-data-shard-13-recovery
+          path: downloaded-shards/free-data-shard-13
+          github-token: ${{ github.token }}
+          run-id: ${{ env.RECOVERY_RUN_ID }}
+      - name: Require exactly one complete set of 20 historical shard manifests
+        shell: pwsh
+        run: |
+          for ($i = 0; $i -lt 20; $i++) {
+            $manifest = "downloaded-shards/free-data-shard-$i/reference/free_data_manifest.json"
+            if (-not (Test-Path $manifest)) { throw "Missing historical shard manifest: $manifest" }
+          }
+          $count = (Get-ChildItem downloaded-shards -Recurse -Filter free_data_manifest.json).Count
+          if ($count -ne 20) { throw "Expected exactly 20 historical shard manifests, found $count" }
+      - name: Merge frozen historical shard caches and PIT references
+        run: >-
+          python merge_free_data_shards.py
+          --input downloaded-shards
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+      - name: Revalidate full historical data before C7 research
+        run: >-
+          python run_data_audit.py
+          --start 20170101
+          --end 20251231
+          --benchmark 000905.SH
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+          --output output/v5_c7_nested/data_audit
+          --min-symbol-coverage 0.98
+          --min-session-coverage 0.97
+
+      - name: Download all 20 PIT float-cap exposure shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pit-exposure-shard-*
+          path: downloaded-pit-exposures
+          github-token: ${{ github.token }}
+          run-id: ${{ env.EXPOSURE_RUN_ID }}
+      - name: Download recovered PIT industry snapshots
+        uses: actions/download-artifact@v4
+        with:
+          name: pit-industry-snapshots
+          path: downloaded-pit-industry
+          github-token: ${{ github.token }}
+          run-id: ${{ env.INDUSTRY_RUN_ID }}
+      - name: Require exactly 20 strict PIT exposure manifests and strict industry recovery
+        shell: pwsh
+        run: |
+          $manifests = Get-ChildItem downloaded-pit-exposures -Recurse -Filter pit_exposure_manifest.json
+          if ($manifests.Count -ne 20) { throw "Expected exactly 20 PIT exposure manifests, found $($manifests.Count)" }
+          foreach ($manifest in $manifests) {
+            $payload = Get-Content $manifest.FullName -Raw | ConvertFrom-Json
+            if (-not $payload.strict_ready) { throw "Non-strict PIT exposure shard: $($manifest.FullName)" }
+          }
+          $industryPath = "downloaded-pit-industry/industry_snapshots.parquet"
+          $industryManifestPath = "downloaded-pit-industry/industry_manifest.json"
+          if (-not (Test-Path $industryPath)) { throw "Missing recovered PIT industry snapshots" }
+          if (-not (Test-Path $industryManifestPath)) { throw "Missing recovered PIT industry manifest" }
+          $industry = Get-Content $industryManifestPath -Raw | ConvertFrom-Json
+          if (-not $industry.strict_ready) { throw "Recovered PIT industry snapshots are not strict-ready" }
+          if ($industry.snapshots_expected -ne $industry.snapshots_written) { throw "Recovered PIT industry snapshot count mismatch" }
+          if ($industry.upstream_exposure_run_id -ne 33963211771) { throw "Recovered PIT industry upstream run mismatch" }
+
+      - name: Run strict purged nested V5 C7 stability research
+        run: >-
+          python -u run_v5_c7_nested_research.py
+          --exposure-root downloaded-pit-exposures
+          --industry-snapshots downloaded-pit-industry/industry_snapshots.parquet
+          --data-start 20170101
+          --start 20180101
+          --end 20251231
+          --benchmark 000905.SH
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+          --output output/v5_c7_nested/research
+          --top-n 8
+          --rebalance-days 5
+          --min-price 3
+          --min-amount 20000000
+          --min-listing-sessions 120
+          --min-symbol-coverage 0.98
+          --min-exposure-coverage 0.95
+          --min-symbols-per-date 50
+      - name: Print C7 decision without accessing 2026 holdout
+        shell: pwsh
+        run: |
+          Get-Content output/v5_c7_nested/research/nested_outer_folds.csv
+          Get-Content output/v5_c7_nested/research/nested_metrics.json
+          Get-Content output/v5_c7_nested/research/basic_alpha_gate.json
+          Get-Content output/v5_c7_nested/research/candidate_manifest.json
+          Get-Content output/v5_c7_nested/research/research_manifest.json
+      - name: Upload V5 C7 nested research reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmt-v5-c7-nested-research
+          path: |
+            output/v5_c7_nested/
+            data/reference/free_data_manifest.json
+          if-no-files-found: error
+          retention-days: 30
