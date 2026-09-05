@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Iterator, Mapping
 
 import numpy as np
 import pandas as pd
@@ -83,61 +83,23 @@ def _skip_return(close: pd.DataFrame, lookback: int, skip_recent: int) -> pd.Dat
     return close.shift(skip_recent).div(close.shift(lookback)).sub(1.0)
 
 
-def build_v5_raw_factors(
+def iter_v5_raw_factors(
     close: pd.DataFrame,
     amount: pd.DataFrame,
     benchmark_close: pd.Series | None = None,
     config: V5FactorConfig | None = None,
-) -> dict[str, pd.DataFrame]:
-    """Build interpretable V5 alpha factors from backward-looking market data only."""
+) -> Iterator[tuple[str, pd.DataFrame]]:
+    """Yield V5 factors one at a time to bound memory on the full A-share market."""
     cfg = config or V5FactorConfig()
     close = close.sort_index().astype(float)
     amount = amount.reindex_like(close).astype(float)
 
-    daily_ret = close.pct_change(fill_method=None)
     mom_short = _skip_return(close, cfg.momentum_short, cfg.skip_recent)
+    yield "momentum_20_5", mom_short
+    del mom_short
+
     mom_mid = _skip_return(close, cfg.momentum_mid, cfg.skip_recent)
-    mom_long = _skip_return(close, cfg.momentum_long, cfg.skip_recent)
-
-    fast_ma = close.rolling(cfg.trend_fast, min_periods=cfg.trend_fast).mean()
-    slow_ma = close.rolling(cfg.trend_slow, min_periods=cfg.trend_slow).mean()
-    trend_quality = fast_ma.div(slow_ma).sub(1.0)
-    trend_persistence = (
-        daily_ret.gt(0.0)
-        .rolling(cfg.trend_slow, min_periods=cfg.trend_slow)
-        .mean()
-        .sub(0.5)
-    )
-
-    realized_vol = daily_ret.rolling(cfg.vol_window, min_periods=cfg.vol_window).std()
-    downside = daily_ret.clip(upper=0.0)
-    downside_vol = (
-        downside.pow(2)
-        .rolling(cfg.downside_window, min_periods=cfg.downside_window)
-        .mean()
-        .pow(0.5)
-    )
-
-    avg_amount = amount.rolling(cfg.amount_window, min_periods=cfg.amount_window).mean()
-    amount_std = amount.rolling(
-        cfg.amount_stability_window,
-        min_periods=cfg.amount_stability_window,
-    ).std()
-    amount_stability = amount_std.div(avg_amount.replace(0.0, np.nan))
-
-    factors: dict[str, pd.DataFrame] = {
-        "momentum_20_5": mom_short,
-        "momentum_60_5": mom_mid,
-        "momentum_120_5": mom_long,
-        "trend_quality": trend_quality,
-        "trend_persistence": trend_persistence,
-        "low_volatility": -realized_vol,
-        "low_downside_risk": -downside_vol,
-        "liquidity": np.log1p(avg_amount.clip(lower=0.0)),
-        "liquidity_stability": -amount_stability,
-        "short_reversal": -close.pct_change(cfg.reversal_window, fill_method=None),
-    }
-
+    yield "momentum_60_5", mom_mid
     if benchmark_close is not None:
         benchmark = benchmark_close.reindex(close.index).astype(float)
         benchmark_mom = _skip_return(
@@ -145,9 +107,65 @@ def build_v5_raw_factors(
             cfg.momentum_mid,
             cfg.skip_recent,
         )["benchmark"]
-        factors["relative_strength_60_5"] = mom_mid.sub(benchmark_mom, axis=0)
+        yield "relative_strength_60_5", mom_mid.sub(benchmark_mom, axis=0)
+        del benchmark, benchmark_mom
+    del mom_mid
 
-    return factors
+    mom_long = _skip_return(close, cfg.momentum_long, cfg.skip_recent)
+    yield "momentum_120_5", mom_long
+    del mom_long
+
+    fast_ma = close.rolling(cfg.trend_fast, min_periods=cfg.trend_fast).mean()
+    slow_ma = close.rolling(cfg.trend_slow, min_periods=cfg.trend_slow).mean()
+    yield "trend_quality", fast_ma.div(slow_ma).sub(1.0)
+    del fast_ma, slow_ma
+
+    daily_ret = close.pct_change(fill_method=None)
+    trend_persistence = (
+        daily_ret.gt(0.0)
+        .rolling(cfg.trend_slow, min_periods=cfg.trend_slow)
+        .mean()
+        .sub(0.5)
+    )
+    yield "trend_persistence", trend_persistence
+    del trend_persistence
+
+    realized_vol = daily_ret.rolling(cfg.vol_window, min_periods=cfg.vol_window).std()
+    yield "low_volatility", -realized_vol
+    del realized_vol
+
+    downside = daily_ret.clip(upper=0.0)
+    downside_vol = (
+        downside.pow(2)
+        .rolling(cfg.downside_window, min_periods=cfg.downside_window)
+        .mean()
+        .pow(0.5)
+    )
+    yield "low_downside_risk", -downside_vol
+    del downside, downside_vol, daily_ret
+
+    avg_amount = amount.rolling(cfg.amount_window, min_periods=cfg.amount_window).mean()
+    yield "liquidity", np.log1p(avg_amount.clip(lower=0.0))
+
+    amount_std = amount.rolling(
+        cfg.amount_stability_window,
+        min_periods=cfg.amount_stability_window,
+    ).std()
+    amount_stability = amount_std.div(avg_amount.replace(0.0, np.nan))
+    yield "liquidity_stability", -amount_stability
+    del amount_std, amount_stability, avg_amount
+
+    yield "short_reversal", -close.pct_change(cfg.reversal_window, fill_method=None)
+
+
+def build_v5_raw_factors(
+    close: pd.DataFrame,
+    amount: pd.DataFrame,
+    benchmark_close: pd.Series | None = None,
+    config: V5FactorConfig | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Build interpretable V5 alpha factors from backward-looking market data only."""
+    return dict(iter_v5_raw_factors(close, amount, benchmark_close, config))
 
 
 def build_v5_ranked_factors(
@@ -157,14 +175,13 @@ def build_v5_ranked_factors(
     config: V5FactorConfig | None = None,
 ) -> dict[str, pd.DataFrame]:
     cfg = config or V5FactorConfig()
-    raw = build_v5_raw_factors(close, amount, benchmark_close, cfg)
     return {
         name: normalize_factor(
             frame,
             lower=cfg.winsor_lower,
             upper=cfg.winsor_upper,
         )
-        for name, frame in raw.items()
+        for name, frame in iter_v5_raw_factors(close, amount, benchmark_close, cfg)
     }
 
 
