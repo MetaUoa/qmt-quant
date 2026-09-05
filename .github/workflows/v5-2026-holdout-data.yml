@@ -1,0 +1,117 @@
+name: v5-2026-holdout-data
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "qmt_quant/holdout.py"
+      - ".github/workflows/v5-2026-holdout-data.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v5-2026-holdout-data-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DATA_START: "20260101"
+  DATA_END: "20260904"
+  BENCHMARK: "000905.SH"
+  SHARD_COUNT: "20"
+
+jobs:
+  shard:
+    name: 2026 holdout shard ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install holdout data dependencies
+        run: python -m pip install numpy pandas pyarrow baostock==0.9.3
+      - name: Download deterministic 2026 holdout shard
+        shell: pwsh
+        run: |
+          $root = "data/holdout_shards/shard_${{ matrix.shard }}"
+          python -u prepare_free_data_shard.py `
+            --start $env:DATA_START `
+            --end $env:DATA_END `
+            --benchmark $env:BENCHMARK `
+            --reference-dir "$root/reference" `
+            --bar-cache-dir "$root/qmt_bars" `
+            --shard-index ${{ matrix.shard }} `
+            --shard-count $env:SHARD_COUNT `
+            --socket-timeout 45
+      - name: Upload 2026 holdout shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: holdout-2026-shard-${{ matrix.shard }}
+          path: data/holdout_shards/shard_${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  merge-and-audit:
+    name: Merge and strictly audit blinded 2026 holdout data
+    needs: shard
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      QMT_QUANT_CACHE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install audit dependencies
+        run: python -m pip install numpy pandas pyarrow
+      - name: Download all 20 holdout shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: holdout-2026-shard-*
+          path: downloaded-holdout-shards
+      - name: Require exactly one complete set of 20 shard manifests
+        shell: pwsh
+        run: |
+          for ($i = 0; $i -lt 20; $i++) {
+            $manifest = "downloaded-holdout-shards/holdout-2026-shard-$i/reference/free_data_manifest.json"
+            if (-not (Test-Path $manifest)) { throw "Missing holdout shard manifest: $manifest" }
+          }
+      - name: Merge 2026 holdout caches and PIT references
+        run: >-
+          python merge_free_data_shards.py
+          --input downloaded-holdout-shards
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+      - name: Strict 2026 holdout data audit
+        run: >-
+          python run_data_audit.py
+          --start 20260101
+          --end 20260904
+          --benchmark 000905.SH
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+          --output output/v5_2026_holdout_data/audit
+          --min-symbol-coverage 0.98
+          --min-session-coverage 0.97
+      - name: Upload blinded 2026 holdout data
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmt-2026-holdout-data
+          path: |
+            data/reference/
+            data/qmt_bars/
+            output/v5_2026_holdout_data/audit/
+          if-no-files-found: error
+          retention-days: 30
