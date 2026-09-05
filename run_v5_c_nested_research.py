@@ -75,6 +75,7 @@ def _eligible_mask(
     *,
     raw_close: pd.DataFrame,
     amount: pd.DataFrame,
+    suspend: pd.DataFrame,
     dates: pd.DatetimeIndex,
     reference: ReferenceData,
     universe: list[str],
@@ -84,7 +85,14 @@ def _eligible_mask(
     amount_window: int,
 ) -> pd.DataFrame:
     avg_amount = amount.rolling(amount_window, min_periods=amount_window).mean().reindex(dates)
-    mask = raw_close.reindex(dates).ge(float(min_price)) & avg_amount.ge(float(min_amount))
+    same_day_amount = amount.reindex(dates)
+    same_day_suspend = suspend.reindex(dates).apply(pd.to_numeric, errors="coerce")
+    tradable = same_day_suspend.eq(0.0) & same_day_amount.gt(0.0)
+    mask = (
+        raw_close.reindex(dates).ge(float(min_price))
+        & avg_amount.ge(float(min_amount))
+        & tradable
+    )
     columns = mask.columns
     for ts in dates:
         if ts not in reference.st_dates:
@@ -297,11 +305,13 @@ def main() -> int:
     stock_bars = {code: frame for code, frame in bars.items() if code != args.benchmark}
     close = _panel(stock_bars, "close", calendar)
     amount = _panel(stock_bars, "amount", calendar)
+    suspend = _panel(stock_bars, "suspendFlag", calendar)
     raw_close = _panel(raw_bars, "close", calendar)
     benchmark_close = bars[args.benchmark]["close"].reindex(calendar).ffill()
     eligible = _eligible_mask(
         raw_close=raw_close,
         amount=amount,
+        suspend=suspend,
         dates=target_dates,
         reference=reference,
         universe=universe,
