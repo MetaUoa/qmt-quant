@@ -11,6 +11,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Merge deterministic PIT industry shard artifacts")
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
+    p.add_argument("--upstream-exposure-run-id", type=int, required=True)
     return p.parse_args()
 
 
@@ -28,7 +29,14 @@ def discover_shards(root: Path) -> list[tuple[dict, Path]]:
     return found
 
 
-def merge_industry_shards(input_root: Path, output_root: Path) -> dict:
+def merge_industry_shards(
+    input_root: Path,
+    output_root: Path,
+    *,
+    upstream_exposure_run_id: int,
+) -> dict:
+    if int(upstream_exposure_run_id) <= 0:
+        raise ValueError("upstream_exposure_run_id must be positive")
     shards = discover_shards(input_root)
     if not shards:
         raise RuntimeError("No PIT industry shard manifests found")
@@ -91,6 +99,7 @@ def merge_industry_shards(input_root: Path, output_root: Path) -> dict:
     snapshots.to_parquet(output_root / "industry_snapshots.parquet", index=False)
     manifest = {
         "source": "baostock-query_stock_industry-sharded",
+        "upstream_exposure_run_id": int(upstream_exposure_run_id),
         "start": next(iter(starts)),
         "end": next(iter(ends)),
         "snapshot_frequency": "monthly_first_open_session",
@@ -110,7 +119,11 @@ def merge_industry_shards(input_root: Path, output_root: Path) -> dict:
 
 def main() -> int:
     args = parse_args()
-    manifest = merge_industry_shards(Path(args.input), Path(args.output))
+    manifest = merge_industry_shards(
+        Path(args.input),
+        Path(args.output),
+        upstream_exposure_run_id=args.upstream_exposure_run_id,
+    )
     print(json.dumps(manifest, indent=2))
     return 0 if manifest["strict_ready"] else 2
 
