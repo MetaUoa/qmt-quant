@@ -1,0 +1,64 @@
+name: v5-2026-exposure-shard12-recovery
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/v5-2026-exposure-shard12-recovery.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v5-2026-exposure-shard12-recovery
+  cancel-in-progress: false
+
+env:
+  DATA_START: "20260101"
+  DATA_END: "20260904"
+  SHARD_COUNT: "20"
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  recover-shard-12:
+    name: Recover blinded 2026 PIT exposure shard 12
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install recovery dependencies
+        run: python -m pip install numpy pandas pyarrow baostock==0.9.3
+      - name: Recover deterministic blinded shard 12 only
+        shell: pwsh
+        run: |
+          $root = "data/holdout_exposure_recovery/shard_12"
+          python -u prepare_pit_exposure_shard.py `
+            --start $env:DATA_START `
+            --end $env:DATA_END `
+            --output $root `
+            --shard-index 12 `
+            --shard-count $env:SHARD_COUNT `
+            --socket-timeout 45 `
+            --attempts 4
+      - name: Require strict shard 12 manifest
+        shell: pwsh
+        run: |
+          $manifestPath = "data/holdout_exposure_recovery/shard_12/pit_exposure_manifest.json"
+          $payload = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          if (-not $payload.strict_ready) { throw "Recovered 2026 PIT exposure shard 12 is not strict-ready" }
+          if ($payload.shard_index -ne 12) { throw "Recovery artifact is not shard 12" }
+          if ($payload.shard_count -ne 20) { throw "Recovery artifact does not preserve 20-shard contract" }
+      - name: Upload recovered blinded 2026 PIT exposure shard 12
+        uses: actions/upload-artifact@v4
+        with:
+          name: holdout-2026-exposure-shard-12-recovery
+          path: data/holdout_exposure_recovery/shard_12/
+          if-no-files-found: error
+          retention-days: 30
