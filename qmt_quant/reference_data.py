@@ -98,6 +98,7 @@ class ReferenceData:
         self._st_map: Dict[pd.Timestamp, Set[str]] = {}
         for trade_date, group in self.st.dropna(subset=st_required).groupby("trade_date"):
             self._st_map[_date(trade_date)] = set(group["ts_code"].astype(str))
+        self._st_dates = frozenset(self._st_map)
 
         limit_required = ["trade_date", "ts_code", "pre_close", "up_limit", "down_limit"]
         self.limits = pd.DataFrame(columns=limit_required) if limits is None else limits.copy()
@@ -121,6 +122,7 @@ class ReferenceData:
             except (TypeError, ValueError):
                 continue
             self._limit_map[(_date(getattr(row, "trade_date")), str(getattr(row, "ts_code")))] = values
+        self._limit_dates = frozenset(key[0] for key in self._limit_map)
 
     @classmethod
     def from_dir(cls, directory: str | Path) -> "ReferenceData":
@@ -147,18 +149,18 @@ class ReferenceData:
     def audit(self) -> ReferenceAudit:
         return ReferenceAudit(
             basic_symbols=len(self._basic),
-            st_dates=len(self._st_map),
-            limit_dates=len({key[0] for key in self._limit_map}),
+            st_dates=len(self._st_dates),
+            limit_dates=len(self._limit_dates),
             calendar_sessions=len(self.calendar),
         )
 
     @property
-    def st_dates(self) -> Set[pd.Timestamp]:
-        return set(self._st_map)
+    def st_dates(self) -> frozenset[pd.Timestamp]:
+        return self._st_dates
 
     @property
-    def limit_dates(self) -> Set[pd.Timestamp]:
-        return {key[0] for key in self._limit_map}
+    def limit_dates(self) -> frozenset[pd.Timestamp]:
+        return self._limit_dates
 
     def codes_ever_active(self, start, end) -> list[str]:
         start_ts, end_ts = _date(start), _date(end)
