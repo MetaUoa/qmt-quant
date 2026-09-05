@@ -1,0 +1,179 @@
+name: v5-pre2026-lineage-archive
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: v5-pre2026-lineage-archive
+  cancel-in-progress: false
+
+env:
+  LINEAGE_LOCK: research_lineage/v5_c_pre2026.json
+  RELEASE_TAG: v5-c-pre2026-frozen-lineage-v1
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+  QMT_QUANT_CACHE_ONLY: "1"
+
+jobs:
+  archive:
+    name: Archive immutable pre-2026 research lineage
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load and validate pre-2026 lineage lock
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          from pathlib import Path
+
+          lock = json.loads(Path("research_lineage/v5_c_pre2026.json").read_text(encoding="utf-8"))
+          assert lock["schema"] == "qmt-v5-lineage-lock-v1"
+          assert lock["research_data_end"] == "2025-12-31"
+          assert lock["holdout_included"] is False
+          assert lock["historical_bars"]["source_artifact_count"] == 20
+          assert lock["historical_bars"]["replace_shard_index"] == 13
+          assert lock["pit_exposures"]["artifact_count"] == 20
+          assert lock["pit_industry"]["recovery_shard_count"] == 12
+          assert lock["pit_industry"]["upstream_exposure_run_id"] == lock["pit_exposures"]["run_id"]
+          assert lock["invariants"]["max_parallel"] == 5
+          assert lock["invariants"]["baostock_version"] == "0.9.3"
+          assert lock["invariants"]["min_symbol_coverage"] == 0.98
+          assert lock["invariants"]["min_session_coverage"] == 0.97
+          print(f"SOURCE_RUN_ID={lock['historical_bars']['source_run_id']}")
+          print(f"RECOVERY_RUN_ID={lock['historical_bars']['recovery_run_id']}")
+          print(f"EXPOSURE_RUN_ID={lock['pit_exposures']['run_id']}")
+          print(f"INDUSTRY_RUN_ID={lock['pit_industry']['run_id']}")
+          print(f"C1_RUN_ID={lock['nested_c1']['run_id']}")
+          print(f"C7_RUN_ID={lock['nested_c7']['run_id']}")
+          PY
+
+      - name: Download frozen historical shards from authoritative source run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: free-data-shard-*
+          path: archive-input/historical
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Remove stale source shard 13
+        shell: bash
+        run: rm -rf archive-input/historical/free-data-shard-13
+
+      - name: Download recovered historical shard 13
+        uses: actions/download-artifact@v4
+        with:
+          name: free-data-shard-13-recovery
+          path: archive-input/historical/free-data-shard-13
+          github-token: ${{ github.token }}
+          run-id: ${{ env.RECOVERY_RUN_ID }}
+
+      - name: Download authoritative PIT exposure shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pit-exposure-shard-*
+          path: archive-input/exposures
+          github-token: ${{ github.token }}
+          run-id: ${{ env.EXPOSURE_RUN_ID }}
+
+      - name: Download pinned merged PIT industry artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pit-industry-snapshots
+          path: archive-input/industry
+          github-token: ${{ github.token }}
+          run-id: ${{ env.INDUSTRY_RUN_ID }}
+
+      - name: Download C1 nested research report
+        uses: actions/download-artifact@v4
+        with:
+          name: qmt-v5-c-nested-research
+          path: archive-input/research/c1
+          github-token: ${{ github.token }}
+          run-id: ${{ env.C1_RUN_ID }}
+
+      - name: Download C7 nested research report
+        uses: actions/download-artifact@v4
+        with:
+          name: qmt-v5-c7-nested-research
+          path: archive-input/research/c7
+          github-token: ${{ github.token }}
+          run-id: ${{ env.C7_RUN_ID }}
+
+      - name: Strictly verify archived lineage before packaging
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("archive-input")
+          historical = list((root / "historical").rglob("free_data_manifest.json"))
+          if len(historical) != 20:
+              raise SystemExit(f"expected exactly 20 historical manifests, found {len(historical)}")
+          expected_dirs = {f"free-data-shard-{i}" for i in range(20)}
+          actual_dirs = {p.name for p in (root / "historical").iterdir() if p.is_dir()}
+          if actual_dirs != expected_dirs:
+              raise SystemExit(f"historical shard directory mismatch: {sorted(actual_dirs)}")
+
+          exposures = list((root / "exposures").rglob("pit_exposure_manifest.json"))
+          if len(exposures) != 20:
+              raise SystemExit(f"expected exactly 20 PIT exposure manifests, found {len(exposures)}")
+          indexes = set()
+          for path in exposures:
+              payload = json.loads(path.read_text(encoding="utf-8"))
+              if payload.get("strict_ready") is not True:
+                  raise SystemExit(f"non-strict exposure manifest: {path}")
+              indexes.add(int(payload["shard_index"]))
+          if indexes != set(range(20)):
+              raise SystemExit(f"PIT exposure shard indexes incomplete: {sorted(indexes)}")
+
+          industry = json.loads((root / "industry" / "industry_manifest.json").read_text(encoding="utf-8"))
+          if industry.get("strict_ready") is not True:
+              raise SystemExit("industry artifact is not strict-ready")
+          if int(industry.get("upstream_exposure_run_id", -1)) != 33963211771:
+              raise SystemExit("industry upstream exposure run mismatch")
+          if industry.get("snapshots_expected") != industry.get("snapshots_written"):
+              raise SystemExit("industry snapshot merge is incomplete")
+
+          for path in (
+              root / "research" / "c1" / "research" / "basic_alpha_gate.json",
+              root / "research" / "c7" / "research" / "basic_alpha_gate.json",
+          ):
+              if not path.exists():
+                  raise SystemExit(f"missing nested research gate report: {path}")
+          PY
+
+      - name: Package immutable release assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          cp "$LINEAGE_LOCK" release-assets/v5_c_pre2026_lineage_lock.json
+          tar -C archive-input/historical -czf release-assets/historical-bars-reference.tar.gz .
+          tar -C archive-input/exposures -czf release-assets/pit-exposures.tar.gz .
+          tar -C archive-input/industry -czf release-assets/pit-industry.tar.gz .
+          tar -C archive-input/research -czf release-assets/nested-research-reports.tar.gz .
+          (cd release-assets && sha256sum *.tar.gz v5_c_pre2026_lineage_lock.json > release_sha256s.txt)
+
+      - name: Create immutable GitHub Release archive
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing overwrite"
+            exit 1
+          fi
+          cat > release-notes.md <<'EOF'
+          Immutable pre-2026 V5-C research lineage archive.
+
+          This release contains only frozen 2017-2025 historical/reference shards, recovered shard 13, all 20 authoritative PIT exposure shards from run 33963211771, the correctly pinned merged PIT industry artifact from run 33969253365, and pre-2026 nested research reports. It contains no 2026 holdout artifacts and performs no data reacquisition.
+          EOF
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "V5-C pre-2026 frozen research lineage v1" --notes-file release-notes.md
+          gh release upload "$RELEASE_TAG" release-assets/*
