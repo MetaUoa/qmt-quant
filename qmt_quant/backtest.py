@@ -25,13 +25,17 @@ def _stamp_tax_rate(ts: pd.Timestamp) -> float:
 
 
 def _panel(bars: Dict[str, pd.DataFrame], field: str, calendar: pd.DatetimeIndex) -> pd.DataFrame:
-    cols = {}
-    for code, frame in bars.items():
-        if field in frame.columns:
-            cols[code] = frame[field].reindex(calendar)
-    if not cols:
+    """Build one aligned field panel without reindexing every symbol in Python."""
+    series = {
+        code: frame[field]
+        for code, frame in bars.items()
+        if field in frame.columns
+    }
+    if not series:
         return pd.DataFrame(index=calendar)
-    return pd.DataFrame(cols, index=calendar).sort_index()
+    panel = pd.concat(series, axis=1, copy=False)
+    panel.columns = panel.columns.astype(str)
+    return panel.reindex(pd.DatetimeIndex(calendar)).sort_index()
 
 
 def _build_features(
@@ -152,7 +156,9 @@ def run_backtest(
         raw_close_px = close_px
         limit_preclose_px = preclose_px
     amount = _panel(stock_bars, "amount", calendar)
-    suspend = _panel(stock_bars, "suspendFlag", calendar).fillna(0.0)
+    # Do not fill missing suspension flags with zero. In strict PIT mode an unknown
+    # suspension state is non-tradable; non-strict legacy backtests retain the open-price fallback.
+    suspend = _panel(stock_bars, "suspendFlag", calendar)
     if score_override is None:
         score, _ = _build_features(close_px, amount, cfg, eligibility_price=raw_close_px)
     else:
@@ -172,6 +178,7 @@ def run_backtest(
 
     cash = float(cost.initial_cash)
     positions: Dict[str, int] = {}
+    last_buy_date: Dict[str, pd.Timestamp] = {}
     trade_rows: List[dict] = []
     equity_rows: List[dict] = []
     rebalance_count = 0
@@ -179,6 +186,8 @@ def run_backtest(
     blocked_limit_buy = 0
     blocked_limit_sell = 0
     blocked_suspend = 0
+    blocked_t1_sell = 0
+    missing_suspend_rows = 0
     missing_limit_rows = 0
     missing_st_dates = 0
     missing_limit_dates = 0
@@ -213,10 +222,21 @@ def run_backtest(
         return max(cost.min_commission, notional * cost.commission_rate)
 
     def is_halted(ts: pd.Timestamp, code: str) -> bool:
+        nonlocal missing_suspend_rows
         if code not in open_px.columns:
             return True
         op = open_px.at[ts, code]
-        flag = suspend.at[ts, code] if code in suspend.columns else 0.0
+        if code not in suspend.columns:
+            if strict_reference:
+                missing_suspend_rows += 1
+                return True
+            return (not np.isfinite(op)) or op <= 0
+        flag = suspend.at[ts, code]
+        if not np.isfinite(flag):
+            if strict_reference:
+                missing_suspend_rows += 1
+                return True
+            return (not np.isfinite(op)) or op <= 0
         return (not np.isfinite(op)) or op <= 0 or float(flag) == 1.0
 
     def opening_ratio(ts: pd.Timestamp, code: str) -> float | None:
@@ -234,11 +254,16 @@ def run_backtest(
         return float(op / prev)
 
     def bar_locked(ts: pd.Timestamp, code: str, side: str) -> bool:
-        # Fallback when exact historical limit data is unavailable: only reject a
-        # one-price board. This is deliberately conservative about certainty.
+        # Daily bars cannot reconstruct the intraday path. When exact daily limit data
+        # are unavailable, reject only a one-price board rather than invent touch timing.
         if code not in open_px.columns:
             return False
-        vals = [open_px.at[ts, code], high_px.at[ts, code], low_px.at[ts, code], close_px.at[ts, code]]
+        vals = [
+            open_px.at[ts, code],
+            high_px.at[ts, code],
+            low_px.at[ts, code],
+            close_px.at[ts, code],
+        ]
         if not all(np.isfinite(v) and v > 0 for v in vals):
             return False
         spread = (max(vals) - min(vals)) / max(abs(float(vals[0])), 1e-12)
@@ -267,7 +292,15 @@ def run_backtest(
     start_i = min(cfg.warmup + delay - 1, max(len(calendar) - 1, 0))
     for i, ts in enumerate(calendar):
         if i < start_i:
-            equity_rows.append({"date": ts, "equity": cash, "cash": cash, "positions": 0, "risk_on": False})
+            equity_rows.append(
+                {
+                    "date": ts,
+                    "equity": cash,
+                    "cash": cash,
+                    "positions": 0,
+                    "risk_on": False,
+                }
+            )
             continue
 
         do_rebalance = ((i - start_i) % cfg.rebalance_days) == 0 and i > 0
@@ -277,23 +310,35 @@ def run_backtest(
                 if signal_ts not in reference.st_dates:
                     missing_st_dates += 1
                     if strict_reference:
-                        raise ValueError(f"Missing historical ST snapshot for signal date {signal_ts.date()}")
+                        raise ValueError(
+                            f"Missing historical ST snapshot for signal date {signal_ts.date()}"
+                        )
                 if ts not in reference.limit_dates:
                     missing_limit_dates += 1
                     if strict_reference:
-                        raise ValueError(f"Missing daily price-limit snapshot for execution date {ts.date()}")
+                        raise ValueError(
+                            f"Missing daily price-limit snapshot for execution date {ts.date()}"
+                        )
 
             row = score.loc[signal_ts].dropna().sort_values(ascending=False)
             if reference is not None:
-                member_codes = set(reference.filter_members(row.index, signal_ts, cfg.min_listing_sessions))
+                member_codes = set(
+                    reference.filter_members(row.index, signal_ts, cfg.min_listing_sessions)
+                )
                 row = row[row.index.isin(member_codes)]
                 st_codes = reference.st_codes(signal_ts)
                 if st_codes:
                     before = len(row)
-                    row = row.drop(index=row.index.intersection(st_codes), errors="ignore")
+                    row = row.drop(
+                        index=row.index.intersection(st_codes), errors="ignore"
+                    )
                     blocked_st += before - len(row)
 
-            selected = list(row.head(cfg.top_n).index) if bool(risk_on.loc[signal_ts]) else []
+            selected = (
+                list(row.head(cfg.top_n).index)
+                if bool(risk_on.loc[signal_ts])
+                else []
+            )
 
             tradable = []
             for code in selected:
@@ -307,8 +352,12 @@ def run_backtest(
             selected = tradable
 
             pre_value = mark_value(i, use_open=True)
-            exposure = 1.0 if bool(risk_on.loc[signal_ts]) else float(cfg.risk_off_exposure)
-            target_value = pre_value * exposure / max(len(selected), 1) if selected else 0.0
+            exposure = (
+                1.0 if bool(risk_on.loc[signal_ts]) else float(cfg.risk_off_exposure)
+            )
+            target_value = (
+                pre_value * exposure / max(len(selected), 1) if selected else 0.0
+            )
             slip = cost.slippage_bps / 10_000.0
 
             desired: Dict[str, int] = {}
@@ -317,12 +366,18 @@ def run_backtest(
                 lots = int(target_value // (px * cost.lot_size))
                 desired[code] = max(lots, 0) * cost.lot_size
 
-            # Sell first so cash is available for buys. Limit-down/halts cannot be sold.
+            # Sell first so cash is available for buys. T+1 is explicit: shares whose
+            # most recent acquisition date is today cannot be sold today, even if a
+            # future scheduler is changed to permit multiple decisions in one session.
             for code in list(positions):
                 current = positions.get(code, 0)
                 target = desired.get(code, 0)
                 qty = max(current - target, 0)
                 if qty <= 0:
+                    continue
+                acquired = last_buy_date.get(code)
+                if acquired is not None and pd.Timestamp(acquired).normalize() >= pd.Timestamp(ts).normalize():
+                    blocked_t1_sell += 1
                     continue
                 if is_halted(ts, code):
                     blocked_suspend += 1
@@ -341,6 +396,7 @@ def run_backtest(
                 positions[code] = current - qty
                 if positions[code] <= 0:
                     del positions[code]
+                    last_buy_date.pop(code, None)
                 trade_rows.append(
                     {
                         "date": ts,
@@ -380,6 +436,7 @@ def run_backtest(
                 fee = commission(notional)
                 cash -= notional + fee
                 positions[code] = current + qty
+                last_buy_date[code] = pd.Timestamp(ts).normalize()
                 trade_rows.append(
                     {
                         "date": ts,
@@ -418,6 +475,8 @@ def run_backtest(
             "blocked_limit_buys": int(blocked_limit_buy),
             "blocked_limit_sells": int(blocked_limit_sell),
             "blocked_suspended": int(blocked_suspend),
+            "blocked_t1_sells": int(blocked_t1_sell),
+            "missing_suspend_rows": int(missing_suspend_rows),
             "missing_limit_rows": int(missing_limit_rows),
             "missing_st_dates": int(missing_st_dates),
             "missing_limit_dates": int(missing_limit_dates),
@@ -427,6 +486,9 @@ def run_backtest(
             "blocked_random_fill": int(blocked_random_fill),
             "execution_delay_sessions": int(delay),
             "fill_probability": float(cost.fill_probability),
+            "t_plus_one_enforced": True,
+            "limit_model": "open_auction_reference_plus_one_price_daily_fallback",
+            "intraday_limit_touch_modelled": False,
             "average_market_breadth": float(breadth.mean()) if len(breadth.dropna()) else 0.0,
         }
     )
