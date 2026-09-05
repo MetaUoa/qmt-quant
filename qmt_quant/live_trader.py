@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Iterable
+import time
+from typing import Callable, Iterable
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ def build_equal_weight_plan(
         desired[code] = max(int(target_value // (px * lot_size)), 0) * lot_size
 
     orders: list[OrderInstruction] = []
-    # Sells first. Never plan more than today's available volume.
+    # Sells first. Never plan more than today's available volume (T+1 safe).
     for code, pos in sorted(positions.items()):
         current = int(pos.volume)
         target = int(desired.get(code, 0))
@@ -85,18 +86,34 @@ class QmtBroker:
         self.trader = None
         self.account = None
 
-    def connect(self) -> None:
-        trader = self._XtQuantTrader(self.userdata_path, self.session_id)
-        account = self._StockAccount(self.account_id, self.account_type)
-        trader.start()
-        rc = trader.connect()
-        if rc != 0:
-            raise RuntimeError(f"MiniQMT connect failed: {rc}")
-        sub = trader.subscribe(account)
-        if sub not in (0, True):
-            raise RuntimeError(f"MiniQMT account subscribe failed: {sub}")
-        self.trader = trader
-        self.account = account
+    def connect(self, *, max_attempts: int = 3, retry_delay_seconds: float = 1.0) -> None:
+        attempts = max(int(max_attempts), 1)
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            trader = self._XtQuantTrader(self.userdata_path, self.session_id)
+            account = self._StockAccount(self.account_id, self.account_type)
+            try:
+                trader.start()
+                rc = trader.connect()
+                if rc != 0:
+                    raise RuntimeError(f"MiniQMT connect failed: {rc}")
+                sub = trader.subscribe(account)
+                if sub not in (0, True):
+                    raise RuntimeError(f"MiniQMT account subscribe failed: {sub}")
+                self.trader = trader
+                self.account = account
+                return
+            except Exception as exc:
+                last_error = exc
+                stop = getattr(trader, "stop", None)
+                if callable(stop):
+                    try:
+                        stop()
+                    except Exception:
+                        pass
+                if attempt < attempts:
+                    time.sleep(max(float(retry_delay_seconds), 0.0))
+        raise RuntimeError(f"MiniQMT connect failed after {attempts} attempts") from last_error
 
     def snapshot(self) -> tuple[float, float, dict[str, PositionSnapshot]]:
         if self.trader is None or self.account is None:
@@ -116,7 +133,6 @@ class QmtBroker:
             )
         total_asset = float(getattr(asset, "total_asset", 0.0))
         if total_asset <= 0:
-            # Compatibility with XtAsset variants that expose balance/account-type fields differently.
             total_asset = float(getattr(asset, "balance", 0.0) or getattr(asset, "cash", 0.0)) + sum(
                 p.market_value for p in mapped.values()
             )
@@ -155,25 +171,97 @@ class QmtBroker:
             }
         return out
 
-    def submit_plan(self, plan: list[OrderInstruction], *, strategy_name: str = "qmt_quant_v7") -> list[dict]:
+    def query_orders(self, *, cancelable_only: bool = False) -> list[dict]:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("Broker is not connected")
+        rows = self.trader.query_stock_orders(self.account, bool(cancelable_only)) or []
+        out: list[dict] = []
+        for row in rows:
+            order_id = int(getattr(row, "order_id", 0) or 0)
+            order_volume = int(getattr(row, "order_volume", 0) or 0)
+            traded_volume = int(getattr(row, "traded_volume", 0) or 0)
+            out.append(
+                {
+                    "order_id": order_id,
+                    "code": str(getattr(row, "stock_code", "")),
+                    "order_volume": order_volume,
+                    "traded_volume": traded_volume,
+                    "remaining_volume": max(order_volume - traded_volume, 0),
+                    "order_status": int(getattr(row, "order_status", -1) or -1),
+                }
+            )
+        return out
+
+    def reconcile_order_ids(
+        self,
+        order_ids: Iterable[int],
+        *,
+        max_attempts: int = 3,
+        retry_delay_seconds: float = 0.5,
+    ) -> dict:
+        wanted = {int(x) for x in order_ids if int(x) > 0}
+        found: dict[int, dict] = {}
+        for attempt in range(max(int(max_attempts), 1)):
+            for row in self.query_orders(cancelable_only=False):
+                if int(row["order_id"]) in wanted:
+                    found[int(row["order_id"])] = row
+            if wanted.issubset(found):
+                break
+            if attempt + 1 < max(int(max_attempts), 1):
+                time.sleep(max(float(retry_delay_seconds), 0.0))
+        return {
+            "orders": [found[key] for key in sorted(found)],
+            "missing_order_ids": sorted(wanted.difference(found)),
+            "requires_manual_reconciliation": bool(
+                wanted.difference(found)
+                or any(int(row.get("remaining_volume", 0)) > 0 for row in found.values())
+            ),
+        }
+
+    def submit_plan(
+        self,
+        plan: list[OrderInstruction],
+        *,
+        strategy_name: str = "qmt_quant_v7",
+        on_event: Callable[[dict], None] | None = None,
+    ) -> list[dict]:
         if self.trader is None or self.account is None:
             raise RuntimeError("Broker is not connected")
         from xtquant import xtconstant
 
+        def emit(payload: dict) -> None:
+            if on_event is not None:
+                on_event(dict(payload))
+
         codes = [x.code for x in plan]
         tick_prices = self.executable_prices(self.full_tick(codes))
         results: list[dict] = []
-        # Sells are already ordered before buys by build_equal_weight_plan().
         for item in plan:
+            emit(
+                {
+                    "event": "INTENT",
+                    "code": item.code,
+                    "side": item.side,
+                    "shares": int(item.shares),
+                    "reference_price": float(item.reference_price),
+                    "reason": item.reason,
+                }
+            )
             p = tick_prices.get(item.code)
             if p is None:
-                results.append({"code": item.code, "side": item.side, "status": "SKIP_NO_TICK"})
+                result = {"code": item.code, "side": item.side, "status": "SKIP_NO_TICK"}
+                results.append(result)
+                emit({"event": "RESULT", **result})
                 continue
             if item.side == "BUY" and not p.get("buy_tradable", False):
-                results.append({"code": item.code, "side": item.side, "status": "SKIP_NO_ASK_LIMIT_OR_QUOTE"})
+                result = {"code": item.code, "side": item.side, "status": "SKIP_NO_ASK_LIMIT_OR_QUOTE"}
+                results.append(result)
+                emit({"event": "RESULT", **result})
                 continue
             if item.side == "SELL" and not p.get("sell_tradable", False):
-                results.append({"code": item.code, "side": item.side, "status": "SKIP_NO_BID_LIMIT_OR_QUOTE"})
+                result = {"code": item.code, "side": item.side, "status": "SKIP_NO_BID_LIMIT_OR_QUOTE"}
+                results.append(result)
+                emit({"event": "RESULT", **result})
                 continue
             order_type = xtconstant.STOCK_BUY if item.side == "BUY" else xtconstant.STOCK_SELL
             price = p["buy"] if item.side == "BUY" else p["sell"]
@@ -184,26 +272,53 @@ class QmtBroker:
                 affordable = int(cash_now // max(price * 100, 1e-12)) * 100
                 shares = min(shares, affordable)
                 if shares < 100:
-                    results.append({"code": item.code, "side": item.side, "status": "SKIP_INSUFFICIENT_CASH"})
+                    result = {"code": item.code, "side": item.side, "status": "SKIP_INSUFFICIENT_CASH"}
+                    results.append(result)
+                    emit({"event": "RESULT", **result})
                     continue
-            order_id = self.trader.order_stock(
-                self.account,
-                item.code,
-                order_type,
-                shares,
-                xtconstant.FIX_PRICE,
-                float(price),
-                strategy_name,
-                f"{item.side}:{item.reason}",
-            )
-            results.append(
+            emit(
                 {
+                    "event": "SUBMIT_ATTEMPT",
                     "code": item.code,
                     "side": item.side,
                     "shares": shares,
-                    "price": price,
-                    "order_id": int(order_id),
-                    "status": "SUBMITTED" if int(order_id) > 0 else "FAILED",
+                    "price": float(price),
                 }
             )
+            try:
+                order_id = self.trader.order_stock(
+                    self.account,
+                    item.code,
+                    order_type,
+                    shares,
+                    xtconstant.FIX_PRICE,
+                    float(price),
+                    strategy_name,
+                    f"{item.side}:{item.reason}",
+                )
+            except Exception as exc:
+                result = {
+                    "code": item.code,
+                    "side": item.side,
+                    "shares": shares,
+                    "price": float(price),
+                    "order_id": 0,
+                    "status": "SUBMIT_EXCEPTION",
+                    "error_type": type(exc).__name__,
+                }
+                results.append(result)
+                emit({"event": "RESULT", **result})
+                # The remote side-effect is uncertain when order_stock raises. Stop
+                # sending any further orders until the operator reconciles broker state.
+                break
+            result = {
+                "code": item.code,
+                "side": item.side,
+                "shares": shares,
+                "price": float(price),
+                "order_id": int(order_id),
+                "status": "SUBMITTED" if int(order_id) > 0 else "FAILED",
+            }
+            results.append(result)
+            emit({"event": "RESULT", **result})
         return results
