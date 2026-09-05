@@ -1,0 +1,53 @@
+{
+  "schema": "qmt-v5-lineage-lock-v1",
+  "research_data_end": "2025-12-31",
+  "holdout_included": false,
+  "historical_bars": {
+    "source_run_id": 33811845110,
+    "source_head_sha": "586f9e5b2905609430b6f379713aaa8f5c8c825c",
+    "source_artifact_pattern": "free-data-shard-*",
+    "source_artifact_count": 20,
+    "replace_shard_index": 13,
+    "recovery_run_id": 33887254974,
+    "recovery_artifact_name": "free-data-shard-13-recovery",
+    "recovery_artifact_digest": "sha256:8ffd32d1dc47141e1403d62e6d1cd460257a19225d27af7ea9f409e130275fa8"
+  },
+  "pit_exposures": {
+    "run_id": 33963211771,
+    "head_sha": "c2c143a0273e3be41d05e07064ffdcadd03c0e67",
+    "artifact_pattern": "pit-exposure-shard-*",
+    "artifact_count": 20,
+    "strict_ready_required": true,
+    "authoritative": true
+  },
+  "pit_industry": {
+    "run_id": 33969253365,
+    "head_sha": "db6d62d2fd8309415b8b169cc79e58eafaa72d78",
+    "artifact_name": "pit-industry-snapshots",
+    "artifact_digest": "sha256:e49b3bf1c2242b31793d27bc595017bd8898b0bbd0ecd50d611eb248372f35e0",
+    "recovery_shard_count": 12,
+    "upstream_exposure_run_id": 33963211771,
+    "strict_ready_required": true
+  },
+  "nested_c1": {
+    "run_id": 33976610795,
+    "artifact_name": "qmt-v5-c-nested-research",
+    "artifact_digest": "sha256:bf4aff627d3ec61028f08799480c03022f2db0f899d790a208cb043143bd5baf",
+    "basic_alpha_gate_passed": false
+  },
+  "nested_c7": {
+    "run_id": 33981334543,
+    "artifact_name": "qmt-v5-c7-nested-research",
+    "artifact_digest": "sha256:38cef6539cf015460a349e1b148a2dae6e3ed6ae5aa9cf1d3b9148cf50201aed",
+    "basic_alpha_gate_passed": false
+  },
+  "invariants": {
+    "historical_shards": 20,
+    "max_parallel": 5,
+    "baostock_version": "0.9.3",
+    "min_symbol_coverage": 0.98,
+    "min_session_coverage": 0.97,
+    "risk_on_always_true_for_v5_c": true,
+    "production_holdout_locked": true
+  }
+}
