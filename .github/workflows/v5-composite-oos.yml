@@ -7,6 +7,8 @@ on:
       - main
     paths:
       - ".github/workflows/v5-composite-oos.yml"
+      - "run_v5_composite_oos.py"
+      - "run_v5_composite_oos_entry.py"
 
 permissions:
   contents: read
@@ -90,7 +92,7 @@ jobs:
           run-id: ${{ env.FACTOR_RUN_ID }}
       - name: Run strict purged training-only V5 composite OOS
         run: >-
-          python run_v5_composite_oos.py
+          python run_v5_composite_oos_entry.py
           --factor-observations prior-v5-factor-research/output/v5_factor_research/factors/factor_observations.csv
           --data-start 20170101
           --start 20180101
