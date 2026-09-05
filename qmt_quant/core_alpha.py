@@ -33,6 +33,7 @@ class CoreAlphaPolicy:
     max_factors: int = 4
     weight_metric_cap: float = 0.10
     include_challengers: bool = False
+    stability_weighting: bool = False
 
     @property
     def allowed_factors(self) -> tuple[str, ...]:
@@ -50,8 +51,10 @@ def select_core_alpha(
     """Freeze the post-B-research alpha stack using training evidence only.
 
     The core pool intentionally excludes the momentum factors identified as unstable
-    in B1-B6.  Directions, redundancy and weights are still learned only from the
-    supplied training window; no validation observations are consulted here.
+    in B1-B6. Directions, redundancy and weights are learned only from the supplied
+    training window; no validation observations are consulted here. C7 can replace
+    only the selected factors' weight magnitudes with bounded training-only stability
+    scores while preserving C1 inclusion, orientation and redundancy decisions.
     """
     cfg = policy or CoreAlphaPolicy()
     selection = select_training_composite(
@@ -69,6 +72,15 @@ def select_core_alpha(
     forbidden = set(EXCLUDED_CORE_FACTORS).intersection(selection.selected_factors)
     if forbidden:
         raise RuntimeError(f"excluded core factors were selected: {sorted(forbidden)}")
+    if cfg.stability_weighting:
+        from .alpha_stability import stability_reweight_selection
+
+        selection = stability_reweight_selection(
+            observations,
+            selection,
+            start=train_start,
+            end=train_end,
+        )
     return selection
 
 
