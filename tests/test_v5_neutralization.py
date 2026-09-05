@@ -45,6 +45,20 @@ def test_neutralize_fails_closed_on_missing_exposure_coverage():
         )
 
 
+def test_neutralize_fails_closed_on_missing_group_coverage():
+    index = [f"s{i:03d}" for i in range(100)]
+    factor = pd.Series(np.arange(100, dtype=float), index=index)
+    groups = pd.Series(["A"] * 50 + ["B"] * 50, index=index, dtype="string")
+    groups.iloc[:10] = pd.NA
+    with pytest.raises(RuntimeError, match="coverage"):
+        neutralize_cross_section(
+            factor,
+            groups=groups,
+            min_symbols=50,
+            min_coverage=0.95,
+        )
+
+
 def test_panel_requires_each_exposure_snapshot():
     dates = pd.to_datetime(["2020-01-02", "2020-01-03"])
     columns = [f"s{i:03d}" for i in range(40)]
