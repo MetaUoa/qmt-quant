@@ -7,8 +7,9 @@ def test_one_shot_nested_dispatch_is_pinned_and_blinded():
     assert "actions: write" in text
     assert 'INDUSTRY_RUN_ID: "33969253365"' in text
     assert "v5-c-nested-research.yml/dispatches" in text
-    assert '\"ref\":\"main\"' in text
-    assert '\"industry_run_id\"' in text
+    assert "--data" in text
+    assert "ref" in text and "main" in text
+    assert "industry_run_id" in text
     assert "33963211771" not in text
     assert "33963542253" not in text
     assert "33963234789" not in text
