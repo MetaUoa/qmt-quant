@@ -24,6 +24,7 @@ def test_streamed_factor_engine_exposes_expected_research_factors():
         "momentum_20_5",
         "momentum_60_5",
         "relative_strength_60_5",
+        "residual_relative_strength_60_5",
         "momentum_120_5",
         "trend_quality",
         "trend_persistence",
