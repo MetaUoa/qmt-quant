@@ -18,11 +18,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install test dependencies
+      - name: Install locked repository dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy pandas pyarrow pytest pytest-cov
+          python -m pip install -r requirements.txt
+          python -m pip check
+      - name: Print resolved dependency versions
+        shell: pwsh
+        run: python -m pip freeze
       - name: Run automated offline tests
         shell: pwsh
         run: python run_automated_tests.py
