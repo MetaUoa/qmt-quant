@@ -1,0 +1,100 @@
+name: v5-pit-industry-recovery
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "prepare_pit_industry.py"
+      - "merge_pit_industry_shards.py"
+      - ".github/workflows/v5-pit-industry-recovery.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v5-pit-industry-recovery-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DATA_START: "20170101"
+  DATA_END: "20251231"
+  INDUSTRY_SHARD_COUNT: "12"
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  industry-shard:
+    name: PIT industry recovery shard ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install recovery dependencies
+        run: python -m pip install numpy pandas pyarrow baostock==0.9.3
+      - name: Download deterministic PIT industry shard
+        shell: pwsh
+        run: |
+          $root = "data/pit_industry_recovery/shard_${{ matrix.shard }}"
+          python -u prepare_pit_industry.py `
+            --start $env:DATA_START `
+            --end $env:DATA_END `
+            --output $root `
+            --shard-index ${{ matrix.shard }} `
+            --shard-count $env:INDUSTRY_SHARD_COUNT `
+            --socket-timeout 45
+      - name: Upload PIT industry recovery shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: pit-industry-recovery-shard-${{ matrix.shard }}
+          path: data/pit_industry_recovery/shard_${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  merge:
+    name: Merge strict PIT industry recovery
+    needs: industry-shard
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install merge dependencies
+        run: python -m pip install pandas pyarrow
+      - name: Download all PIT industry recovery shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pit-industry-recovery-shard-*
+          path: downloaded-pit-industry-recovery
+      - name: Merge and validate all 12 industry shards
+        run: >-
+          python merge_pit_industry_shards.py
+          --input downloaded-pit-industry-recovery
+          --output data/pit_industry_recovery/merged
+      - name: Require strict merged industry artifact
+        shell: pwsh
+        run: |
+          $manifest = Get-Content data/pit_industry_recovery/merged/industry_manifest.json -Raw | ConvertFrom-Json
+          if (-not $manifest.strict_ready) { throw "Merged PIT industry recovery is not strict-ready" }
+          if ($manifest.shard_count -ne 12) { throw "Expected 12 PIT industry recovery shards" }
+          if ($manifest.snapshots_expected -ne $manifest.snapshots_written) { throw "PIT industry snapshot count mismatch" }
+      - name: Upload recovered PIT industry snapshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: pit-industry-snapshots
+          path: data/pit_industry_recovery/merged/
+          if-no-files-found: error
+          retention-days: 30
