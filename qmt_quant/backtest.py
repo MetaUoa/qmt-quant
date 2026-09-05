@@ -118,6 +118,9 @@ def run_backtest(
     reference: ReferenceData | None = None,
     strict_reference: bool = False,
     limit_reference_bars: Dict[str, pd.DataFrame] | None = None,
+    *,
+    score_override: pd.DataFrame | None = None,
+    risk_on_override: pd.Series | None = None,
 ) -> BacktestResult:
     cfg = strategy or StrategyConfig()
     cost = costs or CostConfig()
@@ -150,7 +153,12 @@ def run_backtest(
         limit_preclose_px = preclose_px
     amount = _panel(stock_bars, "amount", calendar)
     suspend = _panel(stock_bars, "suspendFlag", calendar).fillna(0.0)
-    score, _ = _build_features(close_px, amount, cfg, eligibility_price=raw_close_px)
+    if score_override is None:
+        score, _ = _build_features(close_px, amount, cfg, eligibility_price=raw_close_px)
+    else:
+        score = score_override.reindex(index=calendar, columns=close_px.columns).apply(
+            pd.to_numeric, errors="coerce"
+        )
 
     benchmark_close = bars[benchmark_code]["close"].reindex(calendar).ffill()
     benchmark_ma = benchmark_close.rolling(cfg.benchmark_ma, min_periods=cfg.benchmark_ma).mean()
@@ -159,6 +167,8 @@ def run_backtest(
     breadth = (close_px > breadth_ma).sum(axis=1) / close_px.notna().sum(axis=1).replace(0, np.nan)
     breadth_ok = breadth.fillna(0.0) >= float(cfg.min_breadth)
     risk_on = (benchmark_close > benchmark_ma) & (benchmark_mom > cfg.benchmark_mom_floor) & breadth_ok
+    if risk_on_override is not None:
+        risk_on = risk_on_override.reindex(calendar).fillna(False).astype(bool)
 
     cash = float(cost.initial_cash)
     positions: Dict[str, int] = {}
@@ -420,6 +430,10 @@ def run_backtest(
             "average_market_breadth": float(breadth.mean()) if len(breadth.dropna()) else 0.0,
         }
     )
+    if score_override is not None:
+        metrics["score_override"] = True
+    if risk_on_override is not None:
+        metrics["risk_on_override"] = True
     return BacktestResult(
         equity=equity,
         trades=trades,

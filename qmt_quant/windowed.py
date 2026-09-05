@@ -24,6 +24,13 @@ def _slice_frames(
     return out
 
 
+def _slice_panel(frame: pd.DataFrame | pd.Series | None, start: pd.Timestamp, end: pd.Timestamp):
+    if frame is None:
+        return None
+    index = pd.DatetimeIndex(frame.index)
+    return frame.loc[(index >= start) & (index <= end)].copy()
+
+
 def context_start_for_window(
     bars: Dict[str, pd.DataFrame],
     benchmark_code: str,
@@ -58,6 +65,8 @@ def run_window_backtest(
     reference: ReferenceData | None = None,
     strict_reference: bool = False,
     limit_reference_bars: Dict[str, pd.DataFrame] | None = None,
+    score_override: pd.DataFrame | None = None,
+    risk_on_override: pd.Series | None = None,
 ) -> BacktestResult:
     cfg = strategy or StrategyConfig()
     cost = costs or CostConfig()
@@ -74,6 +83,8 @@ def run_window_backtest(
         if limit_reference_bars is not None
         else None
     )
+    window_score = _slice_panel(score_override, context_start, end)
+    window_risk_on = _slice_panel(risk_on_override, context_start, end)
     raw = run_backtest(
         window_bars,
         benchmark_code,
@@ -82,6 +93,8 @@ def run_window_backtest(
         reference=reference,
         strict_reference=strict_reference,
         limit_reference_bars=window_raw,
+        score_override=window_score,
+        risk_on_override=window_risk_on,
     )
 
     equity = raw.equity.loc[
