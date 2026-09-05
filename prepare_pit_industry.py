@@ -44,6 +44,34 @@ def select_snapshot_shard(
     return pd.DatetimeIndex(dates)[index::count]
 
 
+def fetch_trade_calendar_with_retry(
+    api,
+    start,
+    end,
+    *,
+    attempts: int = 4,
+    sleep_seconds: float = 0.5,
+    socket_timeout_seconds: float = 45.0,
+) -> pd.DataFrame:
+    """Fetch the calendar with bounded reconnect/rebind protection."""
+    if int(attempts) <= 0:
+        raise ValueError("attempts must be positive")
+    last: Exception | None = None
+    for attempt in range(int(attempts)):
+        try:
+            return fetch_trade_calendar(api, start, end)
+        except Exception as exc:
+            last = exc
+            if attempt >= int(attempts) - 1:
+                break
+            _reconnect_baostock(
+                api,
+                socket_timeout_seconds=float(socket_timeout_seconds),
+            )
+            time.sleep(max(0.0, float(sleep_seconds)) * (2**attempt))
+    raise RuntimeError(f"trade-calendar bootstrap failed after retries: {last}") from last
+
+
 def _query_snapshot(
     api,
     date: pd.Timestamp,
@@ -76,7 +104,14 @@ def main() -> int:
 
     with baostock_session() as bs:
         _bind_baostock_socket_timeout(args.socket_timeout)
-        calendar = fetch_trade_calendar(bs, args.start, args.end)
+        calendar = fetch_trade_calendar_with_retry(
+            bs,
+            args.start,
+            args.end,
+            attempts=args.attempts,
+            sleep_seconds=max(args.sleep, 0.5),
+            socket_timeout_seconds=args.socket_timeout,
+        )
         all_dates = monthly_first_open_dates(calendar)
         dates = select_snapshot_shard(all_dates, args.shard_index, args.shard_count)
         for number, date in enumerate(dates, 1):
