@@ -27,7 +27,9 @@ def ic_correlation_matrix(
             raise ValueError("horizon column is required when horizon is specified")
         frame = frame.loc[frame["horizon"] == int(horizon)]
     pivot = frame.pivot_table(index="date", columns="factor", values="rank_ic", aggfunc="mean")
-    return pivot.corr(method="spearman")
+    # Spearman correlation is Pearson correlation of ranks. Ranking explicitly keeps
+    # this module dependency-light instead of pulling scipy in through pandas.
+    return pivot.rank(axis=0, method="average", na_option="keep").corr(method="pearson")
 
 
 def panel_rank_correlation(
@@ -48,7 +50,8 @@ def panel_rank_correlation(
         pair = pd.concat([left.loc[ts], right.loc[ts]], axis=1, keys=["left", "right"]).dropna()
         if len(pair) < int(min_symbols):
             continue
-        rows[pd.Timestamp(ts)] = float(pair["left"].corr(pair["right"], method="spearman"))
+        ranked = pair.rank(axis=0, method="average", na_option="keep")
+        rows[pd.Timestamp(ts)] = float(ranked["left"].corr(ranked["right"]))
     return pd.Series(rows, dtype=float).sort_index()
 
 
