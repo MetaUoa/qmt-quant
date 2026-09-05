@@ -31,6 +31,7 @@ def test_pre2026_lineage_lock_is_exact_and_holdout_blind():
 
 def test_archive_workflow_is_manual_only_and_never_reacquires_data():
     text = WORKFLOW.read_text(encoding="utf-8")
+    lowered = text.lower()
     assert "workflow_dispatch:" in text
     assert "schedule:" not in text
     assert "workflow_run:" not in text
@@ -38,7 +39,12 @@ def test_archive_workflow_is_manual_only_and_never_reacquires_data():
     assert 'QMT_QUANT_CACHE_ONLY: "1"' in text
     assert "download-artifact@v4" in text
     assert "download_daily_history" not in text
-    assert "baostock" not in text.lower()
+    # Mentioning the frozen provider version in the lineage assertion is required;
+    # what the archive workflow must never do is import/install/call the provider.
+    assert "import baostock" not in lowered
+    assert "pip install baostock" not in lowered
+    assert "prepare_free_data" not in lowered
+    assert "prepare_pit_exposure" not in lowered
     assert "gh release create" in text
     assert "--clobber" not in text
 
