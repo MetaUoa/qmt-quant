@@ -4,13 +4,24 @@ import numpy as np
 import pandas as pd
 
 
-def ic_correlation_matrix(observations: pd.DataFrame, *, horizon: int | None = None) -> pd.DataFrame:
+def ic_correlation_matrix(
+    observations: pd.DataFrame,
+    *,
+    horizon: int | None = None,
+    start=None,
+    end=None,
+) -> pd.DataFrame:
     required = {"factor", "date", "rank_ic"}
     missing = sorted(required.difference(observations.columns))
     if missing:
         raise ValueError(f"factor observations missing columns: {', '.join(missing)}")
     frame = observations.copy()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date", "factor", "rank_ic"])
+    if start is not None:
+        frame = frame.loc[frame["date"] >= pd.Timestamp(start)]
+    if end is not None:
+        frame = frame.loc[frame["date"] <= pd.Timestamp(end)]
     if horizon is not None:
         if "horizon" not in frame.columns:
             raise ValueError("horizon column is required when horizon is specified")
@@ -24,8 +35,14 @@ def panel_rank_correlation(
     right: pd.DataFrame,
     *,
     min_symbols: int = 20,
+    start=None,
+    end=None,
 ) -> pd.Series:
     common_dates = left.index.intersection(right.index)
+    if start is not None:
+        common_dates = common_dates[common_dates >= pd.Timestamp(start)]
+    if end is not None:
+        common_dates = common_dates[common_dates <= pd.Timestamp(end)]
     rows = {}
     for ts in common_dates:
         pair = pd.concat([left.loc[ts], right.loc[ts]], axis=1, keys=["left", "right"]).dropna()
