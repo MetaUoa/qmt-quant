@@ -2,16 +2,11 @@ name: v5-c-nested-research
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "run_v5_c_nested_research.py"
-      - "qmt_quant/core_alpha.py"
-      - "qmt_quant/neutralized_alpha.py"
-      - "qmt_quant/nested_walk_forward.py"
-      - "qmt_quant/neutralization.py"
-      - ".github/workflows/v5-c-nested-research.yml"
+  workflow_run:
+    workflows:
+      - v5-pit-exposures
+    types:
+      - completed
 
 permissions:
   actions: read
@@ -37,6 +32,7 @@ env:
 jobs:
   research:
     name: Strict nested V5 C full-market research
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 300
     steps:
