@@ -27,8 +27,10 @@ def neutralize_cross_section(
         raise RuntimeError(f"only {len(valid_factor)} factor observations; require {min_symbols}")
 
     design_parts: list[pd.DataFrame] = []
+    exposure_complete = pd.Series(True, index=y.index, dtype=bool)
     if groups is not None:
         group = groups.reindex(y.index).astype("string")
+        exposure_complete &= group.notna()
         group_frame = pd.get_dummies(group, prefix="group", dtype=float, dummy_na=False)
         if group_frame.shape[1] > 1:
             group_frame = group_frame.iloc[:, 1:]
@@ -38,6 +40,7 @@ def neutralize_cross_section(
 
     if exposures is not None:
         numeric = exposures.reindex(y.index).apply(pd.to_numeric, errors="coerce")
+        exposure_complete &= numeric.notna().all(axis=1)
         standardized = numeric.copy()
         for column in standardized.columns:
             series = standardized[column]
@@ -47,6 +50,7 @@ def neutralize_cross_section(
                 standardized[column] = (series - mean) / std
             else:
                 standardized[column] = np.nan
+                exposure_complete &= False
         design_parts.append(standardized)
 
     if not design_parts:
@@ -54,7 +58,7 @@ def neutralize_cross_section(
         return centered.reindex(y.index)
 
     design = pd.concat(design_parts, axis=1)
-    complete = y.notna() & design.notna().all(axis=1)
+    complete = y.notna() & exposure_complete & design.notna().all(axis=1)
     denominator = int(y.notna().sum())
     coverage = float(complete.sum() / denominator) if denominator else 0.0
     if coverage < float(min_coverage):
