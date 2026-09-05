@@ -13,6 +13,7 @@ class StabilityScorePolicy:
     min_years: int = 2
     min_dates_per_year: int = 6
     dispersion_floor: float = 1e-6
+    icir_cap: float = 5.0
 
 
 def factor_stability_scores(
@@ -29,6 +30,8 @@ def factor_stability_scores(
     selector. Validation/holdout observations are excluded by the explicit end date.
     """
     cfg = policy or StabilityScorePolicy()
+    if float(cfg.icir_cap) <= 0.0:
+        raise ValueError("icir_cap must be positive")
     required = {"factor", "date", "rank_ic"}
     missing = sorted(required.difference(observations.columns))
     if missing:
@@ -55,7 +58,8 @@ def factor_stability_scores(
         daily_std = float(group["rank_ic"].std(ddof=1))
         if not np.isfinite(daily_std):
             daily_std = 0.0
-        icir = abs(mean_ic) / max(daily_std, float(cfg.dispersion_floor))
+        raw_icir = abs(mean_ic) / max(daily_std, float(cfg.dispersion_floor))
+        icir = min(float(raw_icir), float(cfg.icir_cap))
         positive_year_fraction = float((aligned_year_ic > 0.0).mean())
         worst_aligned_year_ic = float(aligned_year_ic.min())
         stability_score = float(abs(mean_ic) * (1.0 + icir) * positive_year_fraction)
