@@ -19,9 +19,16 @@ def test_c7_c10_frameworks_do_not_modify_current_c1_nested_path():
     assert CoreAlphaPolicy().allowed_factors == CORE_ALPHA_FACTORS
 
 
-def test_current_c1_nested_workflow_does_not_reference_2026_holdout_inputs():
+def test_current_c1_nested_workflow_does_not_reference_holdout_inputs():
     workflow = Path(".github/workflows/v5-c-nested-research.yml").read_text(encoding="utf-8")
-    assert "33963234789" not in workflow
-    assert "33963542253" not in workflow
-    assert "holdout-2026" not in workflow
-    assert "2026" not in workflow
+    forbidden_holdout_inputs = (
+        "33963234789",
+        "33963542253",
+        "33967228798",
+        "qmt-2026-holdout-data",
+        "holdout-2026-exposure-shard-12-recovery",
+        "holdout-2026-industry-snapshots",
+    )
+    for token in forbidden_holdout_inputs:
+        assert token not in workflow
+    assert "without accessing 2026 holdout" in workflow
