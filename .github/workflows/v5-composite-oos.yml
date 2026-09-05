@@ -1,0 +1,124 @@
+name: v5-composite-oos
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/v5-composite-oos.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  DATA_START: "20170101"
+  TRADE_START: "20180101"
+  DATA_END: "20251231"
+  BENCHMARK: 000905.SH
+  SHARD_COUNT: "20"
+  SOURCE_RUN_ID: "33811845110"
+  RECOVERY_RUN_ID: "33887254974"
+  FACTOR_RUN_ID: "33954426511"
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+  QMT_QUANT_CACHE_ONLY: "1"
+
+jobs:
+  v5-composite-oos:
+    name: Strict purged V5 composite 2021-2025 OOS
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install research dependencies
+        run: python -m pip install numpy pandas pyarrow
+      - name: Download successful shards from frozen source run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: free-data-shard-*
+          path: downloaded-shards
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+      - name: Remove stale shard 13 from source run
+        shell: pwsh
+        run: |
+          $stale = "downloaded-shards/free-data-shard-13"
+          if (Test-Path $stale) { Remove-Item -Recurse -Force $stale }
+      - name: Download recovered shard 13
+        uses: actions/download-artifact@v4
+        with:
+          name: free-data-shard-13-recovery
+          path: downloaded-shards/free-data-shard-13
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ env.RECOVERY_RUN_ID }}
+      - name: Require exactly one complete set of 20 shard artifacts
+        shell: pwsh
+        run: |
+          for ($i = 0; $i -lt 20; $i++) {
+            $manifest = "downloaded-shards/free-data-shard-$i/reference/free_data_manifest.json"
+            if (-not (Test-Path $manifest)) { throw "Missing shard manifest: $manifest" }
+          }
+      - name: Merge frozen shard caches and PIT references
+        run: >-
+          python merge_free_data_shards.py
+          --input downloaded-shards
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+      - name: Revalidate full historical data before V5 OOS
+        run: >-
+          python run_data_audit.py
+          --start 20170101
+          --end 20251231
+          --benchmark 000905.SH
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+          --output output/v5_composite_oos/data_audit
+          --min-symbol-coverage 0.98
+          --min-session-coverage 0.97
+      - name: Download frozen full-market factor evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: qmt-v5-factor-research
+          path: prior-v5-factor-research
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ env.FACTOR_RUN_ID }}
+      - name: Run strict purged training-only V5 composite OOS
+        run: >-
+          python run_v5_composite_oos.py
+          --factor-observations prior-v5-factor-research/output/v5_factor_research/factors/factor_observations.csv
+          --data-start 20170101
+          --start 20180101
+          --end 20251231
+          --benchmark 000905.SH
+          --reference-dir data/reference
+          --bar-cache-dir data/qmt_bars
+          --output output/v5_composite_oos/research
+          --train-years 3
+          --top-n 8
+          --rebalance-days 5
+          --min-price 3
+          --min-amount 20000000
+          --min-listing-sessions 120
+          --min-symbol-coverage 0.98
+      - name: Print V5 OOS decision artifacts
+        shell: pwsh
+        run: |
+          Get-Content output/v5_composite_oos/research/oos_metrics.json
+          Get-Content output/v5_composite_oos/research/v5_gate_report.json
+          Get-Content output/v5_composite_oos/research/fold_selections.json
+          Get-Content output/v5_composite_oos/research/walk_forward_folds.csv
+      - name: Upload V5 composite OOS reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmt-v5-composite-oos
+          path: |
+            output/v5_composite_oos/
+            data/reference/free_data_manifest.json
+          if-no-files-found: error
+          retention-days: 30
