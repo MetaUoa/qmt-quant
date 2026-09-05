@@ -31,15 +31,21 @@ def test_learns_positive_and_inverse_orientations_from_training_only():
 
 def test_duplicate_observation_groups_detects_identical_research_series():
     observations = _observations()
-    groups = duplicate_observation_groups(observations)
+    groups = duplicate_observation_groups(observations, end="2020-12-31")
     assert any(set(group) == {"good", "dup"} for group in groups)
 
 
-def test_future_rows_do_not_change_training_orientation():
+def test_future_rows_do_not_change_training_orientation_or_duplicate_detection():
     observations = _observations()
-    future = observations.loc[observations["factor"] == "good"].copy()
-    future["date"] = pd.Timestamp("2025-01-01")
-    future["rank_ic"] = -1.0
-    combined = pd.concat([observations, future], ignore_index=True)
+    future_good = observations.loc[observations["factor"] == "good"].copy()
+    future_good["date"] = pd.Timestamp("2025-01-01")
+    future_good["rank_ic"] = -1.0
+    future_dup = observations.loc[observations["factor"] == "dup"].copy()
+    future_dup["date"] = pd.Timestamp("2025-01-01")
+    future_dup["rank_ic"] = 1.0
+    combined = pd.concat([observations, future_good, future_dup], ignore_index=True)
+
     learned = learn_factor_orientations(combined, end="2020-12-31")
     assert learned.set_index("factor").loc["good", "orientation"] == 1
+    groups = duplicate_observation_groups(combined, end="2020-12-31")
+    assert any(set(group) == {"good", "dup"} for group in groups)
