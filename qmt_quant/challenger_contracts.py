@@ -41,12 +41,12 @@ def validate_challenger_candidates(candidates: tuple[ChallengerCandidate, ...]) 
         factors = tuple(row.factors)
         if len(factors) != len(set(factors)):
             raise ValueError(f"duplicate factor in candidate {row.name}")
-        unknown = set(factors).difference(allowed)
-        if unknown:
-            raise ValueError(f"candidate {row.name} contains unknown factors: {sorted(unknown)}")
         bad = set(factors).intersection(forbidden)
         if bad:
             raise ValueError(f"candidate {row.name} reintroduces excluded factors: {sorted(bad)}")
+        unknown = set(factors).difference(allowed)
+        if unknown:
+            raise ValueError(f"candidate {row.name} contains unknown factors: {sorted(unknown)}")
         if not set(CORE_ALPHA_FACTORS).issubset(factors):
             raise ValueError(f"candidate {row.name} must retain the complete C1 core")
         added = set(factors).difference(CORE_ALPHA_FACTORS)
