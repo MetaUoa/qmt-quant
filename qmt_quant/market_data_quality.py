@@ -64,9 +64,20 @@ def audit_bar_collection(
     *,
     label: str,
     require_ohlc: bool,
+    excluded_dates_by_code: Mapping[str, set[pd.Timestamp]] | None = None,
 ) -> tuple[BarQuality, pd.DataFrame]:
+    """Audit logical market-data invariants on sessions expected to be tradable.
+
+    Coverage auditing owns the question of whether a symbol/session exists.  This
+    helper checks the logical validity of rows that do exist, excluding known full-day
+    suspensions so provider placeholder rows do not become false corruption alarms.
+    """
     details: list[dict] = []
-    price_columns = ["open", "high", "low", "close"] if require_ohlc else ["open", "close", "preClose"]
+    price_columns = (
+        ["open", "high", "low", "close"]
+        if require_ohlc
+        else ["open", "close", "preClose"]
+    )
     totals = {
         "symbols_checked": 0,
         "rows_checked": 0,
@@ -76,11 +87,16 @@ def audit_bar_collection(
         "negative_volume_rows": 0,
         "negative_amount_rows": 0,
     }
+    exclusions = excluded_dates_by_code or {}
 
     for code, frame in sorted(bars.items()):
         if frame is None or frame.empty:
             continue
         numeric = _numeric(frame, price_columns + ["volume", "amount"])
+        numeric.index = pd.DatetimeIndex(numeric.index).normalize()
+        blocked = exclusions.get(str(code), set())
+        if blocked:
+            numeric = numeric.loc[~numeric.index.isin(pd.DatetimeIndex(sorted(blocked)))]
         active = numeric[price_columns].notna().any(axis=1)
         active_frame = numeric.loc[active]
         if active_frame.empty:
@@ -96,8 +112,8 @@ def audit_bar_collection(
                 | active_frame["low"].gt(min_body)
                 | active_frame["high"].lt(active_frame["low"])
             )
-        negative_volume = active_frame["volume"].lt(0.0) if "volume" in active_frame else pd.Series(False, index=active_frame.index)
-        negative_amount = active_frame["amount"].lt(0.0) if "amount" in active_frame else pd.Series(False, index=active_frame.index)
+        negative_volume = active_frame["volume"].lt(0.0)
+        negative_amount = active_frame["amount"].lt(0.0)
 
         row = {
             "label": label,
@@ -109,7 +125,11 @@ def audit_bar_collection(
             "negative_volume_rows": int(negative_volume.sum()),
             "negative_amount_rows": int(negative_amount.sum()),
         }
-        row["passed"] = not any(row[key] for key in row if key.endswith("_rows") and key != "rows_checked")
+        row["passed"] = not any(
+            row[key]
+            for key in row
+            if key.endswith("_rows") and key != "rows_checked"
+        )
         details.append(row)
         totals["symbols_checked"] += 1
         totals["rows_checked"] += row["rows_checked"]
@@ -143,8 +163,14 @@ def audit_bar_collection(
 def audit_limit_reference_table(limits: pd.DataFrame) -> LimitQuality:
     required = ["pre_close", "up_limit", "down_limit"]
     if limits is None or limits.empty:
-        return LimitQuality(rows_checked=0, missing_rows=0, nonpositive_rows=0, inverted_rows=0)
-    numeric = _numeric(limits, required)
+        return LimitQuality(
+            rows_checked=0,
+            missing_rows=0,
+            nonpositive_rows=0,
+            inverted_rows=0,
+        )
+    frame = limits.loc[limits.get("ts_code", pd.Series(index=limits.index, dtype="object")).astype(str).ne("__NONE__")]
+    numeric = _numeric(frame, required)
     missing = numeric[required].isna().any(axis=1)
     nonpositive = numeric[required].le(0.0).any(axis=1)
     inverted = (
