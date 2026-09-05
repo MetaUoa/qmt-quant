@@ -19,11 +19,13 @@ env:
   DATA_START: "20170101"
   DATA_END: "20251231"
   INDUSTRY_SHARD_COUNT: "12"
+  UPSTREAM_EXPOSURE_RUN_ID: "33963211771"
   PYTHONUTF8: "1"
   PYTHONIOENCODING: "utf-8"
 
 jobs:
   industry-shard:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.id == 33963211771 }}
     name: PIT industry recovery shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 90
@@ -82,6 +84,7 @@ jobs:
           python merge_pit_industry_shards.py
           --input downloaded-pit-industry-recovery
           --output data/pit_industry_recovery/merged
+          --upstream-exposure-run-id ${{ env.UPSTREAM_EXPOSURE_RUN_ID }}
       - name: Require strict merged industry artifact
         shell: pwsh
         run: |
@@ -89,6 +92,7 @@ jobs:
           if (-not $manifest.strict_ready) { throw "Merged PIT industry recovery is not strict-ready" }
           if ($manifest.shard_count -ne 12) { throw "Expected 12 PIT industry recovery shards" }
           if ($manifest.snapshots_expected -ne $manifest.snapshots_written) { throw "PIT industry snapshot count mismatch" }
+          if ($manifest.upstream_exposure_run_id -ne 33963211771) { throw "PIT industry recovery upstream run mismatch" }
       - name: Upload recovered PIT industry snapshots
         uses: actions/upload-artifact@v4
         with:

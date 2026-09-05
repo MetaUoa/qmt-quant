@@ -126,6 +126,7 @@ jobs:
           $industry = Get-Content $industryManifestPath -Raw | ConvertFrom-Json
           if (-not $industry.strict_ready) { throw "Recovered PIT industry snapshots are not strict-ready" }
           if ($industry.snapshots_expected -ne $industry.snapshots_written) { throw "Recovered PIT industry snapshot count mismatch" }
+          if ($industry.upstream_exposure_run_id -ne 33963211771) { throw "Recovered PIT industry upstream run mismatch" }
 
       - name: Run strict purged nested V5 C research
         run: >-
