@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from merge_pit_industry_shards import merge_industry_shards
-from prepare_pit_industry import select_snapshot_shard
+from prepare_pit_industry import fetch_trade_calendar_with_retry, select_snapshot_shard
 
 
 def test_snapshot_shards_are_disjoint_complete_and_ordered():
@@ -21,6 +21,38 @@ def test_snapshot_shards_are_disjoint_complete_and_ordered():
     for shard in shards:
         assert list(shard) == sorted(shard)
         assert len(shard) == 9
+
+
+def test_calendar_bootstrap_reconnects_then_succeeds(monkeypatch):
+    calls = 0
+    reconnects: list[float] = []
+    expected = pd.DataFrame({"cal_date": ["20240102"], "is_open": [1]})
+
+    def fake_calendar(api, start, end):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("calendar timeout")
+        return expected.copy()
+
+    monkeypatch.setattr("prepare_pit_industry.fetch_trade_calendar", fake_calendar)
+    monkeypatch.setattr(
+        "prepare_pit_industry._reconnect_baostock",
+        lambda api, *, socket_timeout_seconds: reconnects.append(socket_timeout_seconds),
+    )
+    monkeypatch.setattr("prepare_pit_industry.time.sleep", lambda _: None)
+
+    result = fetch_trade_calendar_with_retry(
+        object(),
+        "20240101",
+        "20240131",
+        attempts=2,
+        sleep_seconds=0.0,
+        socket_timeout_seconds=23.0,
+    )
+    assert calls == 2
+    assert reconnects == [23.0]
+    pd.testing.assert_frame_equal(result, expected)
 
 
 def _write_industry_shard(root: Path, index: int, count: int, dates: list[str]) -> None:
