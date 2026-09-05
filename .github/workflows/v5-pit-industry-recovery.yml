@@ -1,13 +1,11 @@
 name: v5-pit-industry-recovery
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "prepare_pit_industry.py"
-      - "merge_pit_industry_shards.py"
-      - ".github/workflows/v5-pit-industry-recovery.yml"
+  workflow_run:
+    workflows:
+      - v5-pit-exposures
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
