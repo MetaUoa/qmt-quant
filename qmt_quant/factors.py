@@ -6,6 +6,8 @@ from typing import Iterator, Mapping
 import numpy as np
 import pandas as pd
 
+from .residual_strength import residual_relative_strength
+
 
 @dataclass(frozen=True)
 class V5FactorConfig:
@@ -26,6 +28,8 @@ class V5FactorConfig:
     amount_window: int = 20
     amount_stability_window: int = 20
     reversal_window: int = 5
+    market_beta_window: int = 120
+    market_beta_min_periods: int = 60
     winsor_lower: float = 0.025
     winsor_upper: float = 0.975
 
@@ -38,6 +42,7 @@ class V5FactorConfig:
             self.downside_window,
             self.amount_window,
             self.amount_stability_window,
+            self.market_beta_window,
         ) + self.skip_recent + 5
 
 
@@ -107,8 +112,19 @@ def iter_v5_raw_factors(
             cfg.momentum_mid,
             cfg.skip_recent,
         )["benchmark"]
+        # Retained for frozen-V5 comparability. It is cross-sectionally redundant
+        # with momentum because the same benchmark scalar is subtracted from every stock.
         yield "relative_strength_60_5", mom_mid.sub(benchmark_mom, axis=0)
-        del benchmark, benchmark_mom
+        del benchmark_mom
+        yield "residual_relative_strength_60_5", residual_relative_strength(
+            close,
+            benchmark,
+            lookback=cfg.momentum_mid,
+            skip_recent=cfg.skip_recent,
+            beta_window=cfg.market_beta_window,
+            beta_min_periods=cfg.market_beta_min_periods,
+        )
+        del benchmark
     del mom_mid
 
     mom_long = _skip_return(close, cfg.momentum_long, cfg.skip_recent)
