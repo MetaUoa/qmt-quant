@@ -106,6 +106,17 @@ jobs:
           --min-amount 20000000
           --min-listing-sessions 120
           --min-symbol-coverage 0.98
+      - name: Require zero missing execution references
+        shell: pwsh
+        run: |
+          $rows = Import-Csv output/v5_composite_oos/research/walk_forward_folds.csv
+          foreach ($row in $rows) {
+            foreach ($field in @("missing_limit_rows", "missing_st_dates", "missing_limit_dates")) {
+              if ([int]$row.$field -ne 0) {
+                throw "V5 OOS fold $($row.validation_year) has $field=$($row.$field)"
+              }
+            }
+          }
       - name: Print V5 OOS decision artifacts
         shell: pwsh
         run: |
