@@ -5,6 +5,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .composites import CompositeSpec
+from .v5_selector import TrainingCompositeSelection
+
 
 @dataclass(frozen=True)
 class StabilityScorePolicy:
@@ -93,3 +96,60 @@ def factor_stability_scores(
     return pd.DataFrame(rows).sort_values(
         ["stability_score", "factor"], ascending=[False, True]
     ).reset_index(drop=True)
+
+
+def stability_reweight_selection(
+    observations: pd.DataFrame,
+    selection: TrainingCompositeSelection,
+    *,
+    start,
+    end,
+    policy: StabilityScorePolicy | None = None,
+) -> TrainingCompositeSelection:
+    """Reweight an already-selected C1 factor set using training-only stability.
+
+    Factor inclusion, redundancy pruning and orientation remain exactly those of the
+    supplied C1 selection. Only the magnitudes are replaced by bounded stability
+    scores estimated on the same explicit training window. Missing stability evidence
+    fails closed rather than silently falling back to mean-IC weights.
+    """
+    selected = tuple(selection.selected_factors)
+    if not selected:
+        raise RuntimeError("cannot stability-reweight an empty C1 selection")
+    scores = factor_stability_scores(
+        observations,
+        start=start,
+        end=end,
+        allowed_factors=selected,
+        policy=policy,
+    )
+    by_factor = scores.set_index("factor") if not scores.empty else pd.DataFrame()
+    missing = [factor for factor in selected if factor not in by_factor.index]
+    if missing:
+        raise RuntimeError(
+            "missing training stability evidence for selected factors: " + ", ".join(missing)
+        )
+
+    raw_weights: dict[str, float] = {}
+    for factor in selected:
+        orientation = int(selection.orientations.get(factor, 0))
+        if orientation not in {-1, 1}:
+            raise RuntimeError(f"selected factor {factor} has invalid orientation {orientation}")
+        score = float(by_factor.loc[factor, "stability_score"])
+        if not np.isfinite(score) or score <= 0.0:
+            raise RuntimeError(f"selected factor {factor} has non-positive stability score")
+        raw_weights[factor] = float(orientation) * score
+
+    total = float(sum(abs(value) for value in raw_weights.values()))
+    if not np.isfinite(total) or total <= 0.0:
+        raise RuntimeError("stability weighting produced no finite positive magnitude")
+    weights = {factor: value / total for factor, value in raw_weights.items()}
+    return TrainingCompositeSelection(
+        train_start=str(pd.Timestamp(start).date()),
+        train_end=str(pd.Timestamp(end).date()),
+        spec=CompositeSpec(name="training_ic_stability_weighted", weights=weights),
+        selected_factors=selection.selected_factors,
+        orientations=dict(selection.orientations),
+        duplicate_groups=selection.duplicate_groups,
+        correlation_horizon=int(selection.correlation_horizon),
+    )
