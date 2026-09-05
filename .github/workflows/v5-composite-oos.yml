@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - ".github/workflows/v5-composite-oos.yml"
+      - "run_v5_composite_oos.py"
 
 permissions:
   contents: read
