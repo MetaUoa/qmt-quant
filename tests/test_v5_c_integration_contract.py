@@ -8,6 +8,11 @@ def test_c_nested_workflow_reuses_frozen_data_and_strict_exposures():
     assert 'RECOVERY_RUN_ID: "33887254974"' in text
     assert 'EXPOSURE_RUN_ID: "33963211771"' in text
     assert 'QMT_QUANT_CACHE_ONLY: "1"' in text
+    assert "workflow_run:" in text
+    assert "- v5-pit-exposures" in text
+    assert "- completed" in text
+    assert "github.event.workflow_run.conclusion == 'success'" in text
+    assert "push:" not in text
     assert "Remove stale shard 13 from source run" in text
     assert "Download recovered shard 13" in text
     assert "Expected exactly 20 historical shard manifests" in text
