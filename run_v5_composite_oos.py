@@ -20,6 +20,10 @@ from qmt_quant.v5_walk_forward import annual_folds, assert_no_future_training
 from qmt_quant.windowed import context_start_for_window, run_window_backtest
 
 
+def _native_int_list(values) -> list[int]:
+    return [int(value) for value in values]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Strict training-only V5 composite 2021-2025 walk-forward/OOS"
@@ -107,7 +111,9 @@ def main() -> int:
         raise ValueError(f"factor observations missing columns: {', '.join(missing)}")
     observations["date"] = pd.to_datetime(observations["date"], errors="coerce")
     observations = observations.dropna(subset=["date"])
-    horizons = sorted(pd.to_numeric(observations["horizon"], errors="coerce").dropna().astype(int).unique())
+    horizons = _native_int_list(
+        sorted(pd.to_numeric(observations["horizon"], errors="coerce").dropna().astype(int).unique())
+    )
     if not horizons or min(horizons) <= 0:
         raise ValueError("factor observations contain no positive horizons")
     max_forward_horizon = int(max(horizons))
