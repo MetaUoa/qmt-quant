@@ -24,6 +24,12 @@ def _stamp_tax_rate(ts: pd.Timestamp) -> float:
     return 0.0005 if ts >= pd.Timestamp("2023-08-28") else 0.0010
 
 
+def _t1_sell_allowed(last_buy_date: pd.Timestamp | None, execution_date: pd.Timestamp) -> bool:
+    if last_buy_date is None:
+        return True
+    return pd.Timestamp(last_buy_date).normalize() < pd.Timestamp(execution_date).normalize()
+
+
 def _panel(bars: Dict[str, pd.DataFrame], field: str, calendar: pd.DatetimeIndex) -> pd.DataFrame:
     """Build one aligned field panel without reindexing every symbol in Python."""
     series = {
@@ -375,8 +381,7 @@ def run_backtest(
                 qty = max(current - target, 0)
                 if qty <= 0:
                     continue
-                acquired = last_buy_date.get(code)
-                if acquired is not None and pd.Timestamp(acquired).normalize() >= pd.Timestamp(ts).normalize():
+                if not _t1_sell_allowed(last_buy_date.get(code), ts):
                     blocked_t1_sell += 1
                     continue
                 if is_halted(ts, code):
