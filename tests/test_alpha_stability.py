@@ -1,6 +1,6 @@
 import pandas as pd
 
-from qmt_quant.alpha_stability import factor_stability_scores
+from qmt_quant.alpha_stability import StabilityScorePolicy, factor_stability_scores
 
 
 def _rows(factor, year, values):
@@ -30,6 +30,7 @@ def test_stability_scores_use_training_window_only_and_reward_consistency():
     by_factor = result.set_index("factor")
     assert by_factor.loc["stable", "positive_year_fraction"] == 1.0
     assert by_factor.loc["stable", "mean_rank_ic"] > 0.0
+    assert by_factor.loc["stable", "icir"] <= StabilityScorePolicy().icir_cap
     assert by_factor.loc["stable", "stability_score"] > by_factor.loc["unstable", "stability_score"]
 
 
