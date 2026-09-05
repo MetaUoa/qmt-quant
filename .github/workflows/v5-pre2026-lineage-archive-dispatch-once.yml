@@ -1,0 +1,27 @@
+name: v5-pre2026-lineage-archive-dispatch-once
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: v5-pre2026-lineage-archive-dispatch-once
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch immutable pre-2026 lineage archive once
+    if: ${{ contains(github.event.head_commit.message, 'dispatch pre2026 lineage archive once') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Dispatch manual archive workflow on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run v5-pre2026-lineage-archive.yml --repo "${{ github.repository }}" --ref main
