@@ -2,9 +2,14 @@ name: v5-c-nested-research
 
 on:
   workflow_dispatch:
+    inputs:
+      industry_run_id:
+        description: Run ID containing strict pit-industry-snapshots artifact
+        required: true
+        type: string
   workflow_run:
     workflows:
-      - v5-pit-exposures
+      - v5-pit-industry-recovery
     types:
       - completed
 
@@ -25,6 +30,7 @@ env:
   SOURCE_RUN_ID: "33811845110"
   RECOVERY_RUN_ID: "33887254974"
   EXPOSURE_RUN_ID: "33963211771"
+  INDUSTRY_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.industry_run_id }}
   PYTHONUTF8: "1"
   PYTHONIOENCODING: "utf-8"
   QMT_QUANT_CACHE_ONLY: "1"
@@ -97,14 +103,14 @@ jobs:
           path: downloaded-pit-exposures
           github-token: ${{ github.token }}
           run-id: ${{ env.EXPOSURE_RUN_ID }}
-      - name: Download PIT industry snapshots
+      - name: Download recovered PIT industry snapshots
         uses: actions/download-artifact@v4
         with:
           name: pit-industry-snapshots
           path: downloaded-pit-industry
           github-token: ${{ github.token }}
-          run-id: ${{ env.EXPOSURE_RUN_ID }}
-      - name: Require exactly 20 strict PIT exposure manifests
+          run-id: ${{ env.INDUSTRY_RUN_ID }}
+      - name: Require exactly 20 strict PIT exposure manifests and strict industry recovery
         shell: pwsh
         run: |
           $manifests = Get-ChildItem downloaded-pit-exposures -Recurse -Filter pit_exposure_manifest.json
@@ -113,9 +119,13 @@ jobs:
             $payload = Get-Content $manifest.FullName -Raw | ConvertFrom-Json
             if (-not $payload.strict_ready) { throw "Non-strict PIT exposure shard: $($manifest.FullName)" }
           }
-          if (-not (Test-Path "downloaded-pit-industry/industry_snapshots.parquet")) {
-            throw "Missing PIT industry snapshots"
-          }
+          $industryPath = "downloaded-pit-industry/industry_snapshots.parquet"
+          $industryManifestPath = "downloaded-pit-industry/industry_manifest.json"
+          if (-not (Test-Path $industryPath)) { throw "Missing recovered PIT industry snapshots" }
+          if (-not (Test-Path $industryManifestPath)) { throw "Missing recovered PIT industry manifest" }
+          $industry = Get-Content $industryManifestPath -Raw | ConvertFrom-Json
+          if (-not $industry.strict_ready) { throw "Recovered PIT industry snapshots are not strict-ready" }
+          if ($industry.snapshots_expected -ne $industry.snapshots_written) { throw "Recovered PIT industry snapshot count mismatch" }
 
       - name: Run strict purged nested V5 C research
         run: >-

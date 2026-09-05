@@ -24,10 +24,34 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sleep", type=float, default=0.05)
     p.add_argument("--socket-timeout", type=float, default=45.0)
     p.add_argument("--attempts", type=int, default=4)
+    p.add_argument("--shard-index", type=int, default=0)
+    p.add_argument("--shard-count", type=int, default=1)
     return p.parse_args()
 
 
-def _query_snapshot(api, date: pd.Timestamp, *, attempts: int, socket_timeout: float, sleep: float) -> pd.DataFrame:
+def select_snapshot_shard(
+    dates: pd.DatetimeIndex,
+    shard_index: int,
+    shard_count: int,
+) -> pd.DatetimeIndex:
+    """Return one deterministic modulo shard without changing date order."""
+    count = int(shard_count)
+    index = int(shard_index)
+    if count <= 0:
+        raise ValueError("shard_count must be positive")
+    if index < 0 or index >= count:
+        raise ValueError(f"shard_index must be in [0, {count})")
+    return pd.DatetimeIndex(dates)[index::count]
+
+
+def _query_snapshot(
+    api,
+    date: pd.Timestamp,
+    *,
+    attempts: int,
+    socket_timeout: float,
+    sleep: float,
+) -> pd.DataFrame:
     last: Exception | None = None
     for attempt in range(int(attempts)):
         try:
@@ -38,7 +62,7 @@ def _query_snapshot(api, date: pd.Timestamp, *, attempts: int, socket_timeout: f
             if attempt >= attempts - 1:
                 break
             _reconnect_baostock(api, socket_timeout_seconds=socket_timeout)
-            time.sleep(max(0.5, sleep) * (2 ** attempt))
+            time.sleep(max(0.5, sleep) * (2**attempt))
     raise RuntimeError(f"industry snapshot {date.date()} failed after retries: {last}") from last
 
 
@@ -53,7 +77,8 @@ def main() -> int:
     with baostock_session() as bs:
         _bind_baostock_socket_timeout(args.socket_timeout)
         calendar = fetch_trade_calendar(bs, args.start, args.end)
-        dates = monthly_first_open_dates(calendar)
+        all_dates = monthly_first_open_dates(calendar)
+        dates = select_snapshot_shard(all_dates, args.shard_index, args.shard_count)
         for number, date in enumerate(dates, 1):
             try:
                 raw = _query_snapshot(
@@ -67,24 +92,33 @@ def main() -> int:
             except Exception as exc:
                 errors.append({"date": str(date.date()), "error": str(exc)})
             if number == 1 or number % 12 == 0 or number == len(dates):
-                print(f"[PIT industry] {number}/{len(dates)} snapshots errors={len(errors)}")
+                print(
+                    f"[PIT industry shard {args.shard_index}/{args.shard_count}] "
+                    f"{number}/{len(dates)} snapshots errors={len(errors)}"
+                )
             if args.sleep > 0 and number < len(dates):
                 time.sleep(args.sleep)
 
     snapshots = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     snapshots.to_parquet(root / "industry_snapshots.parquet", index=False)
+    written = int(snapshots["asof_date"].nunique()) if not snapshots.empty else 0
     manifest = {
         "source": "baostock-query_stock_industry",
         "start": args.start,
         "end": args.end,
         "snapshot_frequency": "monthly_first_open_session",
+        "shard_index": int(args.shard_index),
+        "shard_count": int(args.shard_count),
+        "snapshot_candidates_total": int(len(all_dates)),
         "snapshots_expected": int(len(dates)),
-        "snapshots_written": int(snapshots["asof_date"].nunique()) if not snapshots.empty else 0,
+        "snapshots_written": written,
         "rows": int(len(snapshots)),
         "errors": errors,
-        "strict_ready": len(errors) == 0 and (not snapshots.empty),
+        "strict_ready": len(errors) == 0 and written == int(len(dates)),
     }
-    (root / "industry_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    (root / "industry_manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
     print(json.dumps(manifest, indent=2))
     return 0 if manifest["strict_ready"] else 2
 
