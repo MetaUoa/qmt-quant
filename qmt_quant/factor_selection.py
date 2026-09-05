@@ -99,16 +99,13 @@ def apply_orientation(frame: pd.DataFrame, orientation: int) -> pd.DataFrame:
 def duplicate_observation_groups(
     observations: pd.DataFrame,
     *,
+    start=None,
+    end=None,
     value_columns: Iterable[str] = ("rank_ic", "top_bottom_spread"),
     atol: float = 1e-12,
 ) -> list[list[str]]:
-    """Detect research-output duplicates without looking at forward test periods.
-
-    This catches cases such as subtracting the same benchmark return from every symbol,
-    which leaves cross-sectional ranks unchanged and therefore produces identical IC and
-    spread time series.
-    """
-    frame = _training_slice(observations)
+    """Detect duplicate factor research series using training observations only."""
+    frame = _training_slice(observations, start, end)
     cols = [c for c in value_columns if c in frame.columns]
     if not cols:
         raise ValueError("no requested value columns are present")
