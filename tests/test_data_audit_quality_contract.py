@@ -12,9 +12,11 @@ SCRIPT = ROOT / "run_data_audit.py"
 
 
 def test_data_audit_keeps_original_coverage_thresholds_and_adds_quality_gate():
+    args = run_data_audit.validate_args(run_data_audit.parse_args([]))
+    assert args.min_symbol_coverage == 0.98
+    assert args.min_session_coverage == 0.97
+
     text = SCRIPT.read_text(encoding="utf-8")
-    assert 'default=0.98' in text
-    assert 'default=0.97' in text
     assert "audit_bar_collection" in text
     assert "audit_limit_reference_table" in text
     assert "adjusted_quality.passed" in text

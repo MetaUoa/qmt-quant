@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,17 @@ def cli_value(argv: list[str], name: str) -> str | None:
     return argv[index + 1]
 
 
+def assert_float_floor_value(value: float, name: str, *, minimum: float) -> float:
+    """Reject non-finite or loosened research thresholds."""
+    numeric = float(value)
+    floor = float(minimum)
+    if not math.isfinite(numeric):
+        raise RuntimeError(f"{name} must be finite, got {numeric!r}")
+    if numeric < floor:
+        raise RuntimeError(f"{name}={numeric:g} is below frozen research minimum {floor:g}")
+    return numeric
+
+
 def assert_cli_float_floor(
     argv: list[str],
     name: str,
@@ -39,11 +51,7 @@ def assert_cli_float_floor(
         value = float(default if raw is None else raw)
     except ValueError as exc:
         raise RuntimeError(f"invalid numeric value for {name}: {raw}") from exc
-    if value < float(minimum):
-        raise RuntimeError(
-            f"{name}={value:g} is below frozen research minimum {float(minimum):g}"
-        )
-    return value
+    return assert_float_floor_value(value, name, minimum=minimum)
 
 
 def assert_cli_int_floor(
@@ -64,3 +72,23 @@ def assert_cli_int_floor(
             f"{name}={value} is below frozen research minimum {int(minimum)}"
         )
     return value
+
+
+def assert_data_audit_thresholds(
+    *,
+    min_symbol_coverage: float,
+    min_session_coverage: float,
+    policy: ResearchDataPolicy = DEFAULT_RESEARCH_DATA_POLICY,
+) -> tuple[float, float]:
+    """Validate direct historical data-audit thresholds against the frozen policy."""
+    symbol = assert_float_floor_value(
+        min_symbol_coverage,
+        "--min-symbol-coverage",
+        minimum=policy.min_symbol_coverage,
+    )
+    session = assert_float_floor_value(
+        min_session_coverage,
+        "--min-session-coverage",
+        minimum=policy.min_session_coverage,
+    )
+    return symbol, session

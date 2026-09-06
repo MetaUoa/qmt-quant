@@ -17,9 +17,14 @@ from qmt_quant.qmt_data import (
     load_limit_reference_bars,
 )
 from qmt_quant.reference_data import ReferenceData
+from qmt_quant.research_policy import (
+    DEFAULT_RESEARCH_DATA_POLICY,
+    assert_data_audit_thresholds,
+)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    policy = DEFAULT_RESEARCH_DATA_POLICY
     p = argparse.ArgumentParser(description="V2.2 full historical QMT/PIT data audit")
     p.add_argument("--start", default="20180101")
     p.add_argument("--end", default="20251231")
@@ -28,9 +33,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bar-cache-dir", default="data/qmt_bars")
     p.add_argument("--output", default="output/v2_2_data_audit")
     p.add_argument("--download", action="store_true")
-    p.add_argument("--min-symbol-coverage", type=float, default=0.98)
-    p.add_argument("--min-session-coverage", type=float, default=0.97)
-    return p.parse_args()
+    p.add_argument(
+        "--min-symbol-coverage",
+        type=float,
+        default=policy.min_symbol_coverage,
+    )
+    p.add_argument(
+        "--min-session-coverage",
+        type=float,
+        default=policy.min_session_coverage,
+    )
+    return p.parse_args(argv)
+
+
+def validate_args(args: argparse.Namespace) -> argparse.Namespace:
+    assert_data_audit_thresholds(
+        min_symbol_coverage=float(args.min_symbol_coverage),
+        min_session_coverage=float(args.min_session_coverage),
+    )
+    return args
 
 
 def count_observed_sessions(
@@ -80,7 +101,7 @@ def _legacy_sentinel_summary(root: Path, stem: str) -> dict:
 
 
 def main() -> int:
-    args = parse_args()
+    args = validate_args(parse_args())
     data = DataConfig(
         start=args.start,
         end=args.end,
