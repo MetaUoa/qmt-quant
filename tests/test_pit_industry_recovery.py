@@ -8,6 +8,17 @@ import pytest
 
 from merge_pit_industry_shards import merge_industry_shards
 from prepare_pit_industry import fetch_trade_calendar_with_retry, select_snapshot_shard
+from qmt_quant.workflow_contract import (
+    env_value,
+    job,
+    load_workflow,
+    matrix_values,
+    max_parallel,
+    normalized_run,
+    step,
+    structured_text,
+    workflow_events,
+)
 
 
 def test_snapshot_shards_are_disjoint_complete_and_ordered():
@@ -110,36 +121,38 @@ def test_merge_industry_shards_requires_exact_complete_set(tmp_path: Path):
 
 
 def test_industry_recovery_workflow_is_sharded_pinned_and_nested_consumes_it():
-    recovery = Path(".github/workflows/v5-pit-industry-recovery.yml").read_text(
-        encoding="utf-8"
+    recovery = load_workflow(Path(".github/workflows/v5-pit-industry-recovery.yml"))
+    nested = load_workflow(Path(".github/workflows/v5-c-nested-research.yml"))
+    original = load_workflow(Path(".github/workflows/v5-pit-exposures.yml"))
+
+    assert env_value(recovery, "INDUSTRY_SHARD_COUNT") == "12"
+    assert env_value(recovery, "UPSTREAM_EXPOSURE_RUN_ID") == "33963211771"
+    assert max_parallel(recovery, "industry-shard") == 5
+    assert matrix_values(recovery, "industry-shard", "shard") == [str(i) for i in range(12)]
+    recovery_events = workflow_events(recovery)
+    assert recovery_events["workflow_run"]["workflows"] == ["v5-pit-exposures"]
+    assert recovery_events["workflow_run"]["types"] == ["completed"]
+    assert "github.event.workflow_run.id == 33963211771" in str(job(recovery, "industry-shard").get("if"))
+    install = normalized_run(recovery, "industry-shard", "Install recovery dependencies")
+    merge = normalized_run(recovery, "merge", "Merge and validate all 12 industry shards")
+    assert "baostock==0.9.3" in install
+    assert "--upstream-exposure-run-id" in merge
+    assert step(recovery, "merge", "Upload recovered PIT industry snapshots")["with"]["name"] == "pit-industry-snapshots"
+
+    nested_events = workflow_events(nested)
+    assert nested_events["workflow_run"]["workflows"] == ["v5-pit-industry-recovery"]
+    assert env_value(nested, "EXPOSURE_RUN_ID") == "33963211771"
+    assert "github.event.workflow_run.id" in env_value(nested, "INDUSTRY_RUN_ID")
+    strict_step = normalized_run(
+        nested, "research", "Require exactly 20 strict PIT exposure manifests and strict industry recovery"
     )
-    nested = Path(".github/workflows/v5-c-nested-research.yml").read_text(
-        encoding="utf-8"
-    )
-    original = Path(".github/workflows/v5-pit-exposures.yml").read_text(encoding="utf-8")
+    audit = normalized_run(nested, "research", "Revalidate full historical data before C research")
+    assert "Recovered PIT industry snapshots are not strict-ready" in strict_step
+    assert "Recovered PIT industry upstream run mismatch" in strict_step
+    assert "--min-symbol-coverage 0.98" in audit
+    assert "--min-session-coverage 0.97" in audit
+    assert "qmt-2026-holdout-data" not in structured_text(nested)
 
-    assert 'INDUSTRY_SHARD_COUNT: "12"' in recovery
-    assert 'UPSTREAM_EXPOSURE_RUN_ID: "33963211771"' in recovery
-    assert "github.event.workflow_run.id == 33963211771" in recovery
-    assert "max-parallel: 5" in recovery
-    assert "matrix:" in recovery and "11]" in recovery
-    assert "baostock==0.9.3" in recovery
-    assert "workflow_run:" in recovery
-    assert "- v5-pit-exposures" in recovery
-    assert "--upstream-exposure-run-id" in recovery
-    assert "pit-industry-snapshots" in recovery
-
-    assert "- v5-pit-industry-recovery" in nested
-    assert 'EXPOSURE_RUN_ID: "33963211771"' in nested
-    assert "INDUSTRY_RUN_ID:" in nested
-    assert "github.event.workflow_run.id" in nested
-    assert "Recovered PIT industry snapshots are not strict-ready" in nested
-    assert "Recovered PIT industry upstream run mismatch" in nested
-    assert "--min-symbol-coverage 0.98" in nested
-    assert "--min-session-coverage 0.97" in nested
-    assert "qmt-2026-holdout-data" not in nested
-
-    assert "workflow_dispatch:" in original
-    assert "push:" not in original
-    assert 'SHARD_COUNT: "20"' in original
-    assert "max-parallel: 5" in original
+    assert set(workflow_events(original)) == {"workflow_dispatch"}
+    assert env_value(original, "SHARD_COUNT") == "20"
+    assert max_parallel(original, "exposure-shard") == 5
