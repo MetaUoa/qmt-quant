@@ -16,11 +16,13 @@ from qmt_quant.workflow_contract import env_value, load_workflow, normalized_run
 
 def test_b_research_workflow_reuses_frozen_artifacts_and_never_redownloads_baostock():
     workflow = load_workflow(Path(".github/workflows/v5-b-research.yml"))
+    assert workflow.get("on") == {"workflow_dispatch": None}
     assert env_value(workflow, "SHARD_COUNT") == "20"
     assert env_value(workflow, "SOURCE_RUN_ID") == "33811845110"
     assert env_value(workflow, "RECOVERY_RUN_ID") == "33887254974"
     assert env_value(workflow, "FACTOR_RUN_ID") == "33954426511"
     assert env_value(workflow, "OOS_RUN_ID") == "33959592406"
+    assert env_value(workflow, "DATA_END") == "20251231"
     assert env_value(workflow, "QMT_QUANT_CACHE_ONLY") == "1"
     for name in (
         "Require exactly one complete set of 20 shard artifacts",
@@ -34,7 +36,8 @@ def test_b_research_workflow_reuses_frozen_artifacts_and_never_redownloads_baost
     runner = normalized_run(workflow, "v5-b-research", "Run strict B1-B6 research")
     assert "--min-symbol-coverage 0.98" in audit
     assert "--min-session-coverage 0.97" in audit
-    assert "run_v5_b_research.py" in runner
+    assert "run_v5_b_canonical_research.py" in runner
+    assert "run_v5_b_research.py" not in runner
     semantic = structured_text(workflow)
     assert "prepare_free_data_shard.py" not in semantic
     assert "prepare_free_data.py" not in semantic
