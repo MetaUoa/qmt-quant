@@ -6,6 +6,14 @@ import pandas as pd
 import pytest
 
 from prepare_pit_exposure_shard import fetch_active_stock_basic_with_retry
+from qmt_quant.workflow_contract import (
+    env_value,
+    job,
+    load_workflow,
+    normalized_run,
+    step,
+    structured_text,
+)
 
 
 def test_stock_basic_bootstrap_reconnects_then_succeeds(monkeypatch):
@@ -77,16 +85,22 @@ def test_stock_basic_bootstrap_fails_closed_after_exhaustion(monkeypatch):
 
 
 def test_shard12_recovery_is_single_shard_utf8_and_pinned():
-    text = Path(".github/workflows/v5-2026-exposure-shard12-recovery.yml").read_text(
-        encoding="utf-8"
+    workflow = load_workflow(Path(".github/workflows/v5-2026-exposure-shard12-recovery.yml"))
+    assert env_value(workflow, "SHARD_COUNT") == "20"
+    assert env_value(workflow, "PYTHONUTF8") == "1"
+    assert env_value(workflow, "PYTHONIOENCODING") == "utf-8"
+    assert "matrix" not in job(workflow, "recover-shard-12")
+    install = normalized_run(workflow, "recover-shard-12", "Install recovery dependencies")
+    recover = normalized_run(
+        workflow, "recover-shard-12", "Recover deterministic blinded shard 12 only"
     )
-    assert 'SHARD_COUNT: "20"' in text
-    assert 'PYTHONUTF8: "1"' in text
-    assert 'PYTHONIOENCODING: "utf-8"' in text
-    assert "baostock==0.9.3" in text
-    assert "--shard-index 12" in text
-    assert "--shard-count $env:SHARD_COUNT" in text
-    assert "holdout-2026-exposure-shard-12-recovery" in text
-    assert "matrix:" not in text
-    assert "run_backtest" not in text
-    assert "holdout result" not in text.lower()
+    upload = step(
+        workflow, "recover-shard-12", "Upload recovered blinded 2026 PIT exposure shard 12"
+    )
+    assert "baostock==0.9.3" in install
+    assert "--shard-index 12" in recover
+    assert "--shard-count $env:SHARD_COUNT" in recover
+    assert upload["with"]["name"] == "holdout-2026-exposure-shard-12-recovery"
+    semantic = structured_text(workflow).lower()
+    assert "run_backtest" not in semantic
+    assert "holdout result" not in semantic

@@ -8,6 +8,13 @@ from qmt_quant.holdout import (
     freeze_candidate_manifest,
     verify_candidate_manifest,
 )
+from qmt_quant.workflow_contract import (
+    env_value,
+    load_workflow,
+    matrix_values,
+    max_parallel,
+    normalized_run,
+)
 
 
 def _candidate():
@@ -42,10 +49,13 @@ def test_holdout_must_start_after_research_data_end():
 
 
 def test_holdout_data_workflow_preserves_20_shards_and_pin():
-    text = Path(".github/workflows/v5-2026-holdout-data.yml").read_text(encoding="utf-8")
-    assert 'SHARD_COUNT: "20"' in text
-    assert "max-parallel: 5" in text
-    assert 'DATA_END: "20260904"' in text
-    assert "baostock==0.9.3" in text
-    assert "--min-symbol-coverage 0.98" in text
-    assert "--min-session-coverage 0.97" in text
+    workflow = load_workflow(Path(".github/workflows/v5-2026-holdout-data.yml"))
+    assert env_value(workflow, "SHARD_COUNT") == "20"
+    assert env_value(workflow, "DATA_END") == "20260904"
+    assert max_parallel(workflow, "shard") == 5
+    assert matrix_values(workflow, "shard", "shard") == [str(i) for i in range(20)]
+    install = normalized_run(workflow, "shard", "Install holdout data dependencies")
+    audit = normalized_run(workflow, "merge-and-audit", "Strict 2026 holdout data audit")
+    assert "baostock==0.9.3" in install
+    assert "--min-symbol-coverage 0.98" in audit
+    assert "--min-session-coverage 0.97" in audit
