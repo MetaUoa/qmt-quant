@@ -7,19 +7,10 @@ import pandas as pd
 from .composites import CompositeSpec, ic_weight_spec
 from .factor_orthogonality import greedy_low_redundancy_selection, ic_correlation_matrix
 from .factor_selection import duplicate_observation_groups, learn_factor_orientations
+from .research_policy import DEFAULT_V5_SELECTION_POLICY
 
 
-DEFAULT_SAFE_FACTORS = (
-    "low_volatility",
-    "low_downside_risk",
-    "liquidity_stability",
-    "short_reversal",
-    "momentum_20_5",
-    "momentum_60_5",
-    "momentum_120_5",
-    "trend_quality",
-    "trend_persistence",
-)
+DEFAULT_SAFE_FACTORS = DEFAULT_V5_SELECTION_POLICY.safe_factors
 
 
 @dataclass(frozen=True)
@@ -50,13 +41,13 @@ def select_training_composite(
     *,
     train_start,
     train_end,
-    allowed_factors: tuple[str, ...] = DEFAULT_SAFE_FACTORS,
-    correlation_horizon: int = 20,
-    min_abs_rank_ic: float = 0.01,
-    max_abs_correlation: float = 0.80,
-    min_factors: int = 2,
-    max_factors: int = 4,
-    weight_metric_cap: float = 0.10,
+    allowed_factors: tuple[str, ...] = DEFAULT_V5_SELECTION_POLICY.safe_factors,
+    correlation_horizon: int = DEFAULT_V5_SELECTION_POLICY.correlation_horizon,
+    min_abs_rank_ic: float = DEFAULT_V5_SELECTION_POLICY.min_abs_rank_ic,
+    max_abs_correlation: float = DEFAULT_V5_SELECTION_POLICY.max_abs_correlation,
+    min_factors: int = DEFAULT_V5_SELECTION_POLICY.min_factors,
+    max_factors: int = DEFAULT_V5_SELECTION_POLICY.max_factors,
+    weight_metric_cap: float = DEFAULT_V5_SELECTION_POLICY.weight_metric_cap,
 ) -> TrainingCompositeSelection:
     """Freeze one V5 composite using training observations only.
 

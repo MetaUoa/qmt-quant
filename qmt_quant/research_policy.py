@@ -17,6 +17,37 @@ class ResearchDataPolicy:
 DEFAULT_RESEARCH_DATA_POLICY = ResearchDataPolicy()
 
 
+@dataclass(frozen=True)
+class V5SelectionPolicy:
+    """Frozen defaults for the historical training-only V5 composite selector.
+
+    These are centralized invariants, not a request to retune factor selection. The
+    selector keeps accepting explicit overrides for controlled historical experiments,
+    but its default behavior is defined in one typed policy object.
+    """
+
+    safe_factors: tuple[str, ...] = (
+        "low_volatility",
+        "low_downside_risk",
+        "liquidity_stability",
+        "short_reversal",
+        "momentum_20_5",
+        "momentum_60_5",
+        "momentum_120_5",
+        "trend_quality",
+        "trend_persistence",
+    )
+    correlation_horizon: int = 20
+    min_abs_rank_ic: float = 0.01
+    max_abs_correlation: float = 0.80
+    min_factors: int = 2
+    max_factors: int = 4
+    weight_metric_cap: float = 0.10
+
+
+DEFAULT_V5_SELECTION_POLICY = V5SelectionPolicy()
+
+
 def cli_value(argv: list[str], name: str) -> str | None:
     try:
         index = argv.index(name)
