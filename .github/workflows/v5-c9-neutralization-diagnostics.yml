@@ -2,9 +2,6 @@ name: v5-c9-neutralization-diagnostics
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   actions: read
@@ -31,7 +28,6 @@ env:
 jobs:
   diagnostics:
     name: Strict fold-safe V5 C9 neutralization diagnostics
-    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'V5-C9 fold-safe diagnostics') }}
     runs-on: windows-latest
     timeout-minutes: 300
     steps:
