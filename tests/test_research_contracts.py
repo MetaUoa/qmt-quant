@@ -8,6 +8,7 @@ import pytest
 from qmt_quant.research_contracts import (
     STRICT_MISSING_REFERENCE_KEYS,
     assert_strict_research_metrics,
+    research_signal_eligibility,
     stitch_fold_equity,
     strict_signal_eligibility,
 )
@@ -54,6 +55,60 @@ def test_signal_eligibility_requires_explicit_non_suspended_positive_same_day_am
     assert bool(mask.loc[dates[1], "000001.SZ"]) is True
     assert bool(mask.loc[dates[1], "000002.SZ"]) is False
     assert bool(mask.loc[dates[1], "000003.SZ"]) is False
+
+
+def test_legacy_equivalent_profile_keeps_trailing_liquidity_semantics_explicit():
+    dates = pd.DatetimeIndex(pd.to_datetime(["2025-01-02", "2025-01-03"]))
+    code = "000001.SZ"
+    raw_close = pd.DataFrame({code: [10.0, 10.0]}, index=dates)
+    amount = pd.DataFrame({code: [40_000_000.0, 0.0]}, index=dates)
+    legacy = research_signal_eligibility(
+        raw_close=raw_close,
+        amount=amount,
+        dates=pd.DatetimeIndex([dates[1]]),
+        reference=_Reference([dates[1]]),
+        universe=[code],
+        min_price=3.0,
+        min_amount=10_000_000.0,
+        min_listing_sessions=0,
+        amount_window=2,
+        require_same_day_tradable=False,
+        context="legacy unit",
+    )
+    strict = strict_signal_eligibility(
+        raw_close=raw_close,
+        amount=amount,
+        suspend=pd.DataFrame({code: [0.0, 0.0]}, index=dates),
+        dates=pd.DatetimeIndex([dates[1]]),
+        reference=_Reference([dates[1]]),
+        universe=[code],
+        min_price=3.0,
+        min_amount=10_000_000.0,
+        min_listing_sessions=0,
+        amount_window=2,
+        context="strict unit",
+    )
+    assert bool(legacy.loc[dates[1], code]) is True
+    assert bool(strict.loc[dates[1], code]) is False
+
+
+def test_same_day_tradability_requires_suspension_panel():
+    date = pd.DatetimeIndex([pd.Timestamp("2025-01-02")])
+    data = pd.DataFrame([[10.0]], index=date, columns=["000001.SZ"])
+    amount = pd.DataFrame([[30_000_000.0]], index=date, columns=["000001.SZ"])
+    with pytest.raises(ValueError, match="suspension panel"):
+        research_signal_eligibility(
+            raw_close=data,
+            amount=amount,
+            dates=date,
+            reference=_Reference(date),
+            universe=["000001.SZ"],
+            min_price=3.0,
+            min_amount=1.0,
+            min_listing_sessions=0,
+            amount_window=1,
+            require_same_day_tradable=True,
+        )
 
 
 def test_signal_eligibility_requires_st_snapshot():
