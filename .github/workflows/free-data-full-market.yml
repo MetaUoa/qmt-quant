@@ -39,7 +39,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install shard dependencies
-        run: python -m pip install numpy pandas pyarrow baostock
+        run: python -m pip install numpy pandas pyarrow baostock==0.9.3
       - name: Download deterministic historical shard
         shell: pwsh
         run: |
