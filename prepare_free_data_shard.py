@@ -11,6 +11,10 @@ from typing import Callable
 
 import pandas as pd
 
+from qmt_quant.adjustment_provenance import (
+    front_adjustment_provenance,
+    raw_reference_provenance,
+)
 from qmt_quant.free_data import (
     _write_qmt_cache,
     baostock_session,
@@ -64,7 +68,7 @@ def _bind_baostock_socket_timeout(timeout_seconds: float) -> None:
     """Bound the active BaoStock 0.9.3 socket after every successful login.
 
     BaoStock 0.9.3 stores the live TCP socket at
-    ``baostock.common.context.default_socket``.  Login/reconnect replaces that
+    ``baostock.common.context.default_socket``. Login/reconnect replaces that
     object, so the timeout must be rebound after each successful login rather
     than assuming a stable private socket or the pre-0.9.3 socketpool layout.
     """
@@ -261,6 +265,14 @@ def main() -> int:
         "symbols": len(basic),
         "adjusted_symbols_cached": adjusted_loaded,
         "raw_symbols_cached": raw_loaded,
+        "adjustment_provenance": {
+            "adjusted": front_adjustment_provenance(
+                provider="baostock", requested_end=args.end
+            ),
+            "raw": raw_reference_provenance(
+                provider="baostock", requested_end=args.end
+            ),
+        },
         "strict_ready": bool(
             adjusted_loaded == len(basic) and raw_loaded == len(basic) and not errors
         ),
