@@ -15,6 +15,7 @@ from .backtest_execution import (
     settle_buy,
     settle_sell,
 )
+from .backtest_reporting import BacktestDiagnostics, assemble_backtest_metrics
 from .config import CostConfig, StrategyConfig
 from .reference_data import ReferenceData
 
@@ -421,37 +422,34 @@ def run_backtest(
 
     equity = pd.DataFrame(equity_rows).set_index("date")
     trades = pd.DataFrame(trade_rows)
-    metrics = calculate_metrics(equity["equity"])
-    metrics.update(
-        {
-            "trade_count": int(len(trades)),
-            "rebalance_count": int(rebalance_count),
-            "initial_cash": float(cost.initial_cash),
-            "blocked_st_candidates": int(blocked_st),
-            "blocked_limit_buys": int(blocked_limit_buy),
-            "blocked_limit_sells": int(blocked_limit_sell),
-            "blocked_suspended": int(blocked_suspend),
-            "blocked_t1_sells": int(blocked_t1_sell),
-            "missing_suspend_rows": int(guard.missing_suspend_rows),
-            "missing_limit_rows": int(guard.missing_limit_rows),
-            "missing_st_dates": int(missing_st_dates),
-            "missing_limit_dates": int(missing_limit_dates),
-            "point_in_time_universe": bool(reference is not None),
-            "strict_reference": bool(strict_reference),
-            "raw_limit_reference": bool(limit_reference_bars is not None),
-            "blocked_random_fill": int(blocked_random_fill),
-            "execution_delay_sessions": int(delay),
-            "fill_probability": float(cost.fill_probability),
-            "t_plus_one_enforced": True,
-            "limit_model": "open_auction_reference_plus_one_price_daily_fallback",
-            "intraday_limit_touch_modelled": False,
-            "average_market_breadth": float(breadth.mean()) if len(breadth.dropna()) else 0.0,
-        }
+    metrics = assemble_backtest_metrics(
+        calculate_metrics(equity["equity"]),
+        BacktestDiagnostics(
+            trade_count=len(trades),
+            rebalance_count=rebalance_count,
+            initial_cash=cost.initial_cash,
+            blocked_st_candidates=blocked_st,
+            blocked_limit_buys=blocked_limit_buy,
+            blocked_limit_sells=blocked_limit_sell,
+            blocked_suspended=blocked_suspend,
+            blocked_t1_sells=blocked_t1_sell,
+            missing_suspend_rows=guard.missing_suspend_rows,
+            missing_limit_rows=guard.missing_limit_rows,
+            missing_st_dates=missing_st_dates,
+            missing_limit_dates=missing_limit_dates,
+            point_in_time_universe=reference is not None,
+            strict_reference=strict_reference,
+            raw_limit_reference=limit_reference_bars is not None,
+            blocked_random_fill=blocked_random_fill,
+            execution_delay_sessions=delay,
+            fill_probability=cost.fill_probability,
+            average_market_breadth=(
+                float(breadth.mean()) if len(breadth.dropna()) else 0.0
+            ),
+            score_override=score_override is not None,
+            risk_on_override=risk_on_override is not None,
+        ),
     )
-    if score_override is not None:
-        metrics["score_override"] = True
-    if risk_on_override is not None:
-        metrics["risk_on_override"] = True
     return BacktestResult(
         equity=equity,
         trades=trades,
