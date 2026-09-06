@@ -54,11 +54,11 @@ def install_v5_c_contracts(module: ModuleType) -> None:
             context="C research",
         )
 
-    module._coverage_or_fail = _coverage_or_fail
-    module._eligible_mask = _eligible_mask
-    module._assert_strict_metrics = assert_strict_research_metrics
-    module._stitch_fold_equity = stitch_fold_equity
-    module._basic_alpha_gate = evaluate_basic_alpha_gate
+    setattr(module, "_coverage_or_fail", _coverage_or_fail)
+    setattr(module, "_eligible_mask", _eligible_mask)
+    setattr(module, "_assert_strict_metrics", assert_strict_research_metrics)
+    setattr(module, "_stitch_fold_equity", stitch_fold_equity)
+    setattr(module, "_basic_alpha_gate", evaluate_basic_alpha_gate)
 
 
 def install_legacy_v5_research_contracts(
@@ -101,10 +101,10 @@ def install_legacy_v5_research_contracts(
         )
 
     if hasattr(module, "_coverage_or_fail"):
-        module._coverage_or_fail = coverage_or_fail
+        setattr(module, "_coverage_or_fail", coverage_or_fail)
     if hasattr(module, "_eligible_mask"):
-        module._eligible_mask = _eligible_mask
+        setattr(module, "_eligible_mask", _eligible_mask)
     if hasattr(module, "_assert_strict_metrics"):
-        module._assert_strict_metrics = assert_strict_research_metrics
+        setattr(module, "_assert_strict_metrics", assert_strict_research_metrics)
     if hasattr(module, "_stitch_fold_equity"):
-        module._stitch_fold_equity = stitch_fold_equity
+        setattr(module, "_stitch_fold_equity", stitch_fold_equity)
