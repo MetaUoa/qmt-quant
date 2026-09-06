@@ -31,6 +31,70 @@ def commission(cost: CostConfig, notional: float) -> float:
     return max(float(cost.min_commission), float(notional) * float(cost.commission_rate))
 
 
+@dataclass(frozen=True)
+class SellSettlement:
+    """Pure sell-side accounting result after execution eligibility is resolved."""
+
+    ending_cash: float
+    ending_shares: int
+    notional: float
+    commission: float
+    stamp_tax: float
+
+
+@dataclass(frozen=True)
+class BuySettlement:
+    """Pure buy-side accounting result after quantity and fill are resolved."""
+
+    ending_cash: float
+    ending_shares: int
+    notional: float
+    commission: float
+
+
+def settle_sell(
+    *,
+    cash: float,
+    current_shares: int,
+    quantity: int,
+    execution_price: float,
+    cost: CostConfig,
+    stamp_tax_rate: float,
+) -> SellSettlement:
+    """Apply the current sell accounting formula without mutating portfolio state."""
+    qty = int(quantity)
+    notional = qty * float(execution_price)
+    fee = commission(cost, notional)
+    tax = notional * float(stamp_tax_rate)
+    return SellSettlement(
+        ending_cash=float(cash) + notional - fee - tax,
+        ending_shares=int(current_shares) - qty,
+        notional=float(notional),
+        commission=float(fee),
+        stamp_tax=float(tax),
+    )
+
+
+def settle_buy(
+    *,
+    cash: float,
+    current_shares: int,
+    quantity: int,
+    execution_price: float,
+    cost: CostConfig,
+) -> BuySettlement:
+    """Apply the current buy accounting formula without mutating portfolio state."""
+    qty = int(quantity)
+    notional = qty * float(execution_price)
+    fee = commission(cost, notional)
+    return BuySettlement(
+        ending_cash=float(cash) - notional - fee,
+        ending_shares=int(current_shares) + qty,
+        notional=float(notional),
+        commission=float(fee),
+    )
+
+
 def equal_weight_target_shares(
     *,
     selected: Sequence[str],
