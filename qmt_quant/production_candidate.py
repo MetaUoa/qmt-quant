@@ -70,8 +70,8 @@ def load_production_candidate_bundle(path: str | Path) -> StrategySource:
     )
 
 
-def strategy_source_manifest(source: StrategySource) -> dict:
-    payload = {"kind": source.kind, "sha256": source.sha256}
+def strategy_source_manifest(source: StrategySource) -> dict[str, object]:
+    payload: dict[str, object] = {"kind": source.kind, "sha256": source.sha256}
     if source.strategy is not None:
         payload["strategy"] = asdict(source.strategy)
     if source.candidate is not None:
