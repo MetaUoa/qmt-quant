@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Any, Mapping, cast
 
 import pandas as pd
 
@@ -121,7 +121,8 @@ def strict_signal_eligibility(
 def assert_strict_research_metrics(metrics: Mapping[str, object], label: str) -> None:
     """Refuse any research result with a missing strict execution reference."""
     for key in STRICT_MISSING_REFERENCE_KEYS:
-        value = int(metrics.get(key, 0) or 0)
+        raw_value = cast(Any, metrics.get(key, 0))
+        value = int(raw_value or 0)
         if value != 0:
             raise RuntimeError(f"{label} has {key}={value}; refusing research result")
 
