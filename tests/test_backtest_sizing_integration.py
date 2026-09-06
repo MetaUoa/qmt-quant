@@ -9,4 +9,6 @@ def test_backtest_routes_target_and_cash_sizing_through_pure_helpers() -> None:
     assert 'while qty >= lot:' not in text
     assert 'deterministic_fill(cost, ts, code, "SELL")' in text
     assert 'deterministic_fill(cost, ts, code, "BUY")' in text
-    assert text.index('for code in list(positions):') < text.index('for code in selected:')
+    assert text.index('# Sell first so cash is available for buys.') < text.index(
+        '# Buy second, scaling down each order if cash is insufficient.'
+    )
