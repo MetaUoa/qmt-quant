@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from qmt_quant.backtest import _panel, _t1_sell_allowed
+from qmt_quant.backtest_reporting import BacktestDiagnostics, assemble_backtest_metrics
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,7 +47,30 @@ def test_strict_backtest_does_not_fill_unknown_suspension_with_zero():
 
 
 def test_backtest_reports_daily_limit_model_boundary():
-    text = BACKTEST.read_text(encoding="utf-8")
-    assert '"t_plus_one_enforced": True' in text
-    assert '"intraday_limit_touch_modelled": False' in text
-    assert '"limit_model": "open_auction_reference_plus_one_price_daily_fallback"' in text
+    metrics = assemble_backtest_metrics(
+        {},
+        BacktestDiagnostics(
+            trade_count=0,
+            rebalance_count=0,
+            initial_cash=1_000_000.0,
+            blocked_st_candidates=0,
+            blocked_limit_buys=0,
+            blocked_limit_sells=0,
+            blocked_suspended=0,
+            blocked_t1_sells=0,
+            missing_suspend_rows=0,
+            missing_limit_rows=0,
+            missing_st_dates=0,
+            missing_limit_dates=0,
+            point_in_time_universe=True,
+            strict_reference=True,
+            raw_limit_reference=True,
+            blocked_random_fill=0,
+            execution_delay_sessions=1,
+            fill_probability=1.0,
+            average_market_breadth=0.5,
+        ),
+    )
+    assert metrics["t_plus_one_enforced"] is True
+    assert metrics["intraday_limit_touch_modelled"] is False
+    assert metrics["limit_model"] == "open_auction_reference_plus_one_price_daily_fallback"
