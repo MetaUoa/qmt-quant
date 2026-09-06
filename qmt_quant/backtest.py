@@ -17,6 +17,7 @@ from .backtest_execution import (
     settle_sell,
 )
 from .backtest_reporting import BacktestDiagnostics, assemble_backtest_metrics
+from .backtest_selection import select_rebalance_candidates
 from .config import CostConfig, StrategyConfig
 from .reference_data import ReferenceData
 
@@ -254,25 +255,16 @@ def run_backtest(
                             f"Missing daily price-limit snapshot for execution date {ts.date()}"
                         )
 
-            row = score.loc[signal_ts].dropna().sort_values(ascending=False)
-            if reference is not None:
-                member_codes = set(
-                    reference.filter_members(row.index, signal_ts, cfg.min_listing_sessions)
-                )
-                row = row[row.index.isin(member_codes)]
-                st_codes = reference.st_codes(signal_ts)
-                if st_codes:
-                    before = len(row)
-                    row = row.drop(
-                        index=row.index.intersection(st_codes), errors="ignore"
-                    )
-                    blocked_st += before - len(row)
-
-            selected = (
-                list(row.head(cfg.top_n).index)
-                if bool(risk_on.loc[signal_ts])
-                else []
+            selection = select_rebalance_candidates(
+                score_row=score.loc[signal_ts],
+                signal_date=signal_ts,
+                risk_on=bool(risk_on.loc[signal_ts]),
+                top_n=cfg.top_n,
+                min_listing_sessions=cfg.min_listing_sessions,
+                reference=reference,
             )
+            blocked_st += selection.blocked_st_candidates
+            selected = list(selection.selected)
 
             tradable = []
             for code in selected:
