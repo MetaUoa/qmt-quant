@@ -11,6 +11,11 @@ from qmt_quant.neutralization_diagnostics import (
     aggregate_variant_quality,
     summarize_neutralization_variants,
 )
+from qmt_quant.research_policy import (
+    DEFAULT_RESEARCH_DATA_POLICY,
+    assert_cli_float_floor,
+    assert_cli_int_floor,
+)
 from qmt_quant.research_runtime import install_v5_c_contracts
 
 
@@ -35,6 +40,28 @@ def _assert_pre_2026_only(argv: list[str]) -> None:
         raise RuntimeError("C9 research end must be YYYYMMDD or YYYY-MM-DD")
     if end > _MAX_RESEARCH_END:
         raise RuntimeError("C9 is pre-2026 research only; holdout remains blinded")
+
+
+def _assert_data_policy(argv: list[str]) -> None:
+    policy = DEFAULT_RESEARCH_DATA_POLICY
+    assert_cli_float_floor(
+        argv,
+        "--min-symbol-coverage",
+        minimum=policy.min_symbol_coverage,
+        default=policy.min_symbol_coverage,
+    )
+    assert_cli_float_floor(
+        argv,
+        "--min-exposure-coverage",
+        minimum=policy.min_exposure_coverage,
+        default=policy.min_exposure_coverage,
+    )
+    assert_cli_int_floor(
+        argv,
+        "--min-symbols-per-date",
+        minimum=policy.min_symbols_per_date,
+        default=policy.min_symbols_per_date,
+    )
 
 
 def _capture_variant_observations(*args, **kwargs) -> pd.DataFrame:
@@ -128,12 +155,14 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
 
 
 def main() -> int:
-    _assert_pre_2026_only(sys.argv[1:])
+    argv = sys.argv[1:]
+    _assert_pre_2026_only(argv)
+    _assert_data_policy(argv)
     _CAPTURED.clear()
     install_v5_c_contracts(c1)
     c1._variant_observations = _capture_variant_observations
     rc = c1.main()
-    output = Path(_arg_value(sys.argv[1:], "--output") or "output/v5_c_nested")
+    output = Path(_arg_value(argv, "--output") or "output/v5_c_nested")
     _build_fold_safe_diagnostics(output)
     return rc
 
