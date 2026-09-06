@@ -11,6 +11,7 @@ from qmt_quant.neutralization_diagnostics import (
     aggregate_variant_quality,
     summarize_neutralization_variants,
 )
+from qmt_quant.research_runtime import install_v5_c_contracts
 
 
 _MAX_RESEARCH_END = "20251231"
@@ -79,7 +80,9 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
             summary.insert(1, "phase", phase)
             factor_rows.append(summary)
 
-            quality = aggregate_variant_quality(summary.drop(columns=["validation_year", "phase"]))
+            quality = aggregate_variant_quality(
+                summary.drop(columns=["validation_year", "phase"])
+            )
             quality.insert(0, "validation_year", year)
             quality.insert(1, "phase", phase)
             quality_rows.append(quality)
@@ -94,8 +97,16 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
 
     factor_summary = pd.concat(factor_rows, ignore_index=True)
     variant_quality = pd.concat(quality_rows, ignore_index=True)
-    factor_summary.to_csv(output / "c9_neutralization_factor_summary.csv", index=False, encoding="utf-8-sig")
-    variant_quality.to_csv(output / "c9_neutralization_variant_quality.csv", index=False, encoding="utf-8-sig")
+    factor_summary.to_csv(
+        output / "c9_neutralization_factor_summary.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    variant_quality.to_csv(
+        output / "c9_neutralization_variant_quality.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
 
     payload = {
         "method": "fold_safe_neutralization_diagnostics_only",
@@ -103,6 +114,7 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
         "candidate_changed": False,
         "holdout_unlocked": False,
         "pre_2026_only": True,
+        "canonical_c1_contracts": True,
         "core_factors_only": list(c1.CORE_ALPHA_FACTORS),
         "variants": list(c1.VARIANTS),
         "captured_variant_count": len(_CAPTURED),
@@ -118,6 +130,7 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
 def main() -> int:
     _assert_pre_2026_only(sys.argv[1:])
     _CAPTURED.clear()
+    install_v5_c_contracts(c1)
     c1._variant_observations = _capture_variant_observations
     rc = c1.main()
     output = Path(_arg_value(sys.argv[1:], "--output") or "output/v5_c_nested")
