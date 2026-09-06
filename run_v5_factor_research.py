@@ -17,8 +17,9 @@ from qmt_quant.factor_diagnostics import (
     yearly_factor_summary,
 )
 from qmt_quant.factors import V5FactorConfig, iter_v5_raw_factors
-from qmt_quant.qmt_data import coverage_report, load_daily_bars, load_limit_reference_bars
+from qmt_quant.qmt_data import load_daily_bars, load_limit_reference_bars
 from qmt_quant.reference_data import ReferenceData
+from qmt_quant.research_contracts import coverage_or_fail, research_signal_eligibility
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,19 +51,32 @@ def _parse_horizons(text: str) -> list[int]:
     return values
 
 
-def _coverage_or_fail(
-    label: str,
+def _factor_research_eligibility(
+    *,
+    raw_close: pd.DataFrame,
+    amount: pd.DataFrame,
+    dates: pd.DatetimeIndex,
+    reference: ReferenceData,
     universe: list[str],
-    bars: dict[str, pd.DataFrame],
-    threshold: float,
-) -> tuple[float, pd.DataFrame]:
-    report = coverage_report(universe, bars)
-    ratio = float(report["loaded"].mean()) if not report.empty else 0.0
-    if ratio < float(threshold):
-        raise RuntimeError(
-            f"{label} symbol coverage {ratio:.4%} is below required {threshold:.4%}"
-        )
-    return ratio, report
+    min_price: float,
+    min_amount: float,
+    min_listing_sessions: int,
+    amount_window: int,
+) -> pd.DataFrame:
+    """Preserve the historical factor-research eligibility profile explicitly."""
+    return research_signal_eligibility(
+        raw_close=raw_close,
+        amount=amount,
+        dates=dates,
+        reference=reference,
+        universe=universe,
+        min_price=min_price,
+        min_amount=min_amount,
+        min_listing_sessions=min_listing_sessions,
+        amount_window=amount_window,
+        require_same_day_tradable=False,
+        context="factor research",
+    )
 
 
 def main() -> int:
@@ -92,7 +106,7 @@ def main() -> int:
         args.end,
         cache_dir=range_cache,
     )
-    adjusted_coverage, adjusted_report = _coverage_or_fail(
+    adjusted_coverage, adjusted_report = coverage_or_fail(
         "adjusted", universe, bars, args.min_symbol_coverage
     )
     if args.benchmark not in bars or bars[args.benchmark].empty:
@@ -105,7 +119,7 @@ def main() -> int:
         args.end,
         cache_dir=raw_cache,
     )
-    raw_coverage, raw_report = _coverage_or_fail(
+    raw_coverage, raw_report = coverage_or_fail(
         "raw", universe, raw_bars, args.min_symbol_coverage
     )
 
@@ -134,24 +148,17 @@ def main() -> int:
             f"st={len(missing_st_dates)}, limit={len(missing_limit_dates)}"
         )
 
-    avg_amount = amount.rolling(
-        factor_cfg.amount_window,
-        min_periods=factor_cfg.amount_window,
-    ).mean().reindex(sample_dates)
-    base_mask = (
-        raw_close.reindex(sample_dates).ge(float(args.min_price))
-        & avg_amount.ge(float(args.min_amount))
+    base_mask = _factor_research_eligibility(
+        raw_close=raw_close,
+        amount=amount,
+        dates=sample_dates,
+        reference=reference,
+        universe=universe,
+        min_price=args.min_price,
+        min_amount=args.min_amount,
+        min_listing_sessions=args.min_listing_sessions,
+        amount_window=factor_cfg.amount_window,
     )
-    for ts in sample_dates:
-        members = set(
-            reference.filter_members(
-                universe,
-                ts,
-                min_listing_sessions=args.min_listing_sessions,
-            )
-        )
-        allowed = members.difference(reference.st_codes(ts))
-        base_mask.loc[ts, :] &= base_mask.columns.isin(allowed)
 
     forward_samples: dict[int, pd.DataFrame] = {}
     for horizon in horizons:
