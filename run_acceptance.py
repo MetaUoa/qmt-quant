@@ -3,47 +3,82 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 
 import pandas as pd
 
 from qmt_quant.acceptance import grade_strategy
 
 
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="V5 final strategy acceptance grading")
-    p.add_argument("--backtest", default="output/v3_research/best_full_result/metrics.json")
-    p.add_argument("--walk-forward", default="output/walk_forward/walk_forward_metrics.json")
-    p.add_argument("--folds", default="output/walk_forward/walk_forward_folds.csv")
-    p.add_argument("--stress", default="output/v4_5_stress/stress_summary.json")
+    p = argparse.ArgumentParser(description="Explicit-lineage strategy acceptance grading")
+    p.add_argument("--backtest", required=True)
+    p.add_argument("--walk-forward", required=True)
+    p.add_argument("--folds", required=True)
+    p.add_argument("--stress", required=True)
+    p.add_argument("--strategy-sha256", required=True)
     p.add_argument("--output", default="output/v5_acceptance")
     p.add_argument("--require-grade", choices=["A", "B", "C"], default="C")
     return p.parse_args()
 
 
 def _load_json(path: str) -> dict:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(p)
-    return json.loads(p.read_text(encoding="utf-8"))
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(source)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected JSON object: {source}")
+    return payload
+
+
+def _require_strategy_sha(value: str) -> str:
+    sha = str(value).strip().lower()
+    if not _SHA256_RE.fullmatch(sha):
+        raise ValueError("--strategy-sha256 must be an exact lowercase 64-hex SHA256")
+    return sha
 
 
 def main() -> int:
     args = parse_args()
+    strategy_sha256 = _require_strategy_sha(args.strategy_sha256)
     backtest = _load_json(args.backtest)
     oos = _load_json(args.walk_forward)
     stress = _load_json(args.stress)
-    folds = pd.read_csv(args.folds) if Path(args.folds).exists() else pd.DataFrame()
+    folds_path = Path(args.folds)
+    if not folds_path.exists():
+        raise FileNotFoundError(folds_path)
+    folds = pd.read_csv(folds_path)
     report = grade_strategy(backtest, oos, folds, stress)
+    report["strategy_sha256"] = strategy_sha256
+    report["evidence"] = {
+        "backtest": str(Path(args.backtest)),
+        "walk_forward": str(Path(args.walk_forward)),
+        "folds": str(folds_path),
+        "stress": str(Path(args.stress)),
+    }
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "acceptance_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out / "acceptance_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     pd.DataFrame(
         [
-            {"gate": k, "passed": v, "grade": "A"} for k, v in report["grade_a_checks"].items()
+            {"gate": k, "passed": v, "grade": "A"}
+            for k, v in report["grade_a_checks"].items()
         ]
-        + [{"gate": k, "passed": v, "grade": "B"} for k, v in report["grade_b_checks"].items()]
-        + [{"gate": k, "passed": v, "grade": "C"} for k, v in report["grade_c_checks"].items()]
+        + [
+            {"gate": k, "passed": v, "grade": "B"}
+            for k, v in report["grade_b_checks"].items()
+        ]
+        + [
+            {"gate": k, "passed": v, "grade": "C"}
+            for k, v in report["grade_c_checks"].items()
+        ]
     ).to_csv(out / "acceptance_gates.csv", index=False, encoding="utf-8-sig")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
