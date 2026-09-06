@@ -27,6 +27,20 @@ jobs:
       - name: Print resolved dependency versions
         shell: pwsh
         run: python -m pip freeze
+      - name: Ruff correctness gate
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: python -m ruff check . --select E9,F63,F7,F82
+      - name: Mypy safety-contract gate
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: >-
+          python -m mypy
+          qmt_quant/production_candidate.py
+          risk/runtime.py
+          monitoring/alerts.py
+          --ignore-missing-imports
+          --check-untyped-defs
       - name: Run automated offline tests
         shell: pwsh
         run: python run_automated_tests.py
