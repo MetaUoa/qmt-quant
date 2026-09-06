@@ -9,10 +9,11 @@ import pandas as pd
 from .backtest_execution import (
     TradabilityGuard,
     affordable_buy_quantity,
-    commission,
     deterministic_fill,
     equal_weight_target_shares,
     mark_portfolio_value,
+    settle_buy,
+    settle_sell,
 )
 from .config import CostConfig, StrategyConfig
 from .reference_data import ReferenceData
@@ -327,11 +328,16 @@ def run_backtest(
                     blocked_random_fill += 1
                     continue
                 exec_px = float(open_px.at[ts, code]) * (1.0 - slip)
-                notional = qty * exec_px
-                fee = commission(cost, notional)
-                tax = notional * _stamp_tax_rate(ts)
-                cash += notional - fee - tax
-                positions[code] = current - qty
+                settlement = settle_sell(
+                    cash=cash,
+                    current_shares=current,
+                    quantity=qty,
+                    execution_price=exec_px,
+                    cost=cost,
+                    stamp_tax_rate=_stamp_tax_rate(ts),
+                )
+                cash = settlement.ending_cash
+                positions[code] = settlement.ending_shares
                 if positions[code] <= 0:
                     del positions[code]
                     last_buy_date.pop(code, None)
@@ -342,9 +348,9 @@ def run_backtest(
                         "side": "SELL",
                         "shares": qty,
                         "price": exec_px,
-                        "notional": notional,
-                        "commission": fee,
-                        "stamp_tax": tax,
+                        "notional": settlement.notional,
+                        "commission": settlement.commission,
+                        "stamp_tax": settlement.stamp_tax,
                         "signal_date": signal_ts,
                     }
                 )
@@ -369,10 +375,15 @@ def run_backtest(
                 )
                 if qty <= 0:
                     continue
-                notional = qty * exec_px
-                fee = commission(cost, notional)
-                cash -= notional + fee
-                positions[code] = current + qty
+                settlement = settle_buy(
+                    cash=cash,
+                    current_shares=current,
+                    quantity=qty,
+                    execution_price=exec_px,
+                    cost=cost,
+                )
+                cash = settlement.ending_cash
+                positions[code] = settlement.ending_shares
                 last_buy_date[code] = pd.Timestamp(ts).normalize()
                 trade_rows.append(
                     {
@@ -381,8 +392,8 @@ def run_backtest(
                         "side": "BUY",
                         "shares": qty,
                         "price": exec_px,
-                        "notional": notional,
-                        "commission": fee,
+                        "notional": settlement.notional,
+                        "commission": settlement.commission,
                         "stamp_tax": 0.0,
                         "signal_date": signal_ts,
                     }
