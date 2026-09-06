@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from qmt_quant.core_alpha import CORE_ALPHA_FACTORS, CoreAlphaPolicy
+from qmt_quant.workflow_contract import load_workflow, step, structured_text
 
 
 RESEARCH_ONLY_MODULES = (
@@ -20,7 +21,9 @@ def test_c7_c10_frameworks_do_not_modify_current_c1_nested_path():
 
 
 def test_current_c1_nested_workflow_does_not_reference_holdout_inputs():
-    workflow = Path(".github/workflows/v5-c-nested-research.yml").read_text(encoding="utf-8")
+    workflow = load_workflow(Path(".github/workflows/v5-c-nested-research.yml"))
+    assert step(workflow, "research", "Print C decision without accessing 2026 holdout")
+    semantic = structured_text(workflow)
     forbidden_holdout_inputs = (
         "33963234789",
         "33963542253",
@@ -30,5 +33,4 @@ def test_current_c1_nested_workflow_does_not_reference_holdout_inputs():
         "holdout-2026-industry-snapshots",
     )
     for token in forbidden_holdout_inputs:
-        assert token not in workflow
-    assert "without accessing 2026 holdout" in workflow
+        assert token not in semantic
