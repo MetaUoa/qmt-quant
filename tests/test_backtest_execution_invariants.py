@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
+import numpy as np
 import pandas as pd
 
 from qmt_quant.backtest import _panel, _t1_sell_allowed
+from qmt_quant.backtest_execution import TradabilityGuard
 from qmt_quant.backtest_reporting import BacktestDiagnostics, assemble_backtest_metrics
-
-
-ROOT = Path(__file__).resolve().parents[1]
-BACKTEST = ROOT / "qmt_quant" / "backtest.py"
 
 
 def test_t1_sellability_is_explicit_by_calendar_date():
@@ -38,12 +34,25 @@ def test_panel_concat_preserves_calendar_alignment_and_symbol_order():
     assert panel.loc[pd.Timestamp("2025-01-06"), "600000.SH"] == 8.2
 
 
-def test_strict_backtest_does_not_fill_unknown_suspension_with_zero():
-    text = BACKTEST.read_text(encoding="utf-8")
-    assert 'suspend = _panel(stock_bars, "suspendFlag", calendar)' in text
-    assert 'suspend = _panel(stock_bars, "suspendFlag", calendar).fillna(0.0)' not in text
-    assert "missing_suspend_rows" in text
-    assert "if strict_reference:" in text
+def test_non_strict_unknown_suspension_uses_open_quote_fallback():
+    dates = pd.DatetimeIndex(["2025-01-03"])
+    open_px = pd.DataFrame({"000001.SZ": [10.0]}, index=dates)
+    guard = TradabilityGuard(
+        calendar=dates,
+        open_px=open_px,
+        high_px=open_px,
+        low_px=open_px,
+        close_px=open_px,
+        suspend=pd.DataFrame({"000001.SZ": [np.nan]}, index=dates),
+        limit_open_px=open_px,
+        limit_preclose_px=pd.DataFrame({"000001.SZ": [9.5]}, index=dates),
+        reference=None,
+        strict_reference=False,
+        raw_limit_reference_supplied=True,
+        limit_tolerance=0.001,
+    )
+    assert guard.is_halted(dates[0], "000001.SZ") is False
+    assert guard.missing_suspend_rows == 0
 
 
 def test_backtest_reports_daily_limit_model_boundary():
