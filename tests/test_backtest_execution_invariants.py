@@ -51,7 +51,7 @@ def test_non_strict_unknown_suspension_uses_open_quote_fallback():
         raw_limit_reference_supplied=True,
         limit_tolerance=0.001,
     )
-    assert guard.is_halted(dates[0], "000001.SZ") is False
+    assert not bool(guard.is_halted(dates[0], "000001.SZ"))
     assert guard.missing_suspend_rows == 0
 
 
