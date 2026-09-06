@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 import numpy as np
 import pandas as pd
@@ -26,6 +27,42 @@ def _gate(name: str, value, threshold: str, passed: bool) -> dict:
         "threshold": threshold,
         "passed": bool(passed),
     }
+
+
+def evaluate_basic_alpha_gate(
+    metrics: Mapping[str, object],
+    folds: pd.DataFrame,
+    *,
+    config: V5GateConfig | None = None,
+) -> dict:
+    """Evaluate the exact C1/C7 pre-holdout Basic Alpha Gate.
+
+    The return shape intentionally matches the historical nested-research JSON so
+    callers can centralize policy without changing frozen report semantics.
+    """
+    cfg = config or V5GateConfig()
+    returns = pd.to_numeric(
+        folds.get("validation_return", pd.Series(dtype=float)), errors="coerce"
+    ).dropna()
+    total_return = float(metrics.get("total_return", np.nan))
+    sharpe = float(metrics.get("sharpe", np.nan))
+    drawdown = abs(float(metrics.get("max_drawdown", np.nan)))
+    gates = {
+        "positive_oos_return": (
+            np.isfinite(total_return) and total_return > cfg.min_oos_total_return
+        ),
+        "sharpe_at_least_0_5": (
+            np.isfinite(sharpe) and sharpe >= cfg.min_oos_sharpe
+        ),
+        "max_drawdown_at_most_0_35": (
+            np.isfinite(drawdown) and drawdown <= cfg.max_oos_drawdown
+        ),
+        "at_least_4_non_disastrous_folds": int(
+            (returns > cfg.disastrous_fold_loss).sum()
+        )
+        >= cfg.min_non_disastrous_folds,
+    }
+    return {"passed": all(gates.values()), "gates": gates}
 
 
 def evaluate_v5_gates(
