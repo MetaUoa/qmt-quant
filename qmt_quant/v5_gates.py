@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping, cast
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,11 @@ def _gate(name: str, value, threshold: str, passed: bool) -> dict:
     }
 
 
+def _metric_float(value: object) -> float:
+    """Convert report payload values without weakening their external mapping type."""
+    return float(cast(Any, value))
+
+
 def evaluate_basic_alpha_gate(
     metrics: Mapping[str, object],
     folds: pd.DataFrame,
@@ -44,9 +49,9 @@ def evaluate_basic_alpha_gate(
     returns = pd.to_numeric(
         folds.get("validation_return", pd.Series(dtype=float)), errors="coerce"
     ).dropna()
-    total_return = float(metrics.get("total_return", np.nan))
-    sharpe = float(metrics.get("sharpe", np.nan))
-    drawdown = abs(float(metrics.get("max_drawdown", np.nan)))
+    total_return = _metric_float(metrics.get("total_return", np.nan))
+    sharpe = _metric_float(metrics.get("sharpe", np.nan))
+    drawdown = abs(_metric_float(metrics.get("max_drawdown", np.nan)))
     gates = {
         "positive_oos_return": (
             np.isfinite(total_return) and total_return > cfg.min_oos_total_return
