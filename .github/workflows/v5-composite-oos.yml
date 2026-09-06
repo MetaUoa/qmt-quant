@@ -2,12 +2,6 @@ name: v5-composite-oos
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/v5-composite-oos.yml"
-      - "run_v5_composite_oos.py"
 
 permissions:
   contents: read
@@ -28,7 +22,7 @@ env:
 
 jobs:
   v5-composite-oos:
-    name: Strict purged V5 composite 2021-2025 OOS
+    name: Strict purged canonical V5 composite 2021-2025 OOS
     runs-on: windows-latest
     timeout-minutes: 300
     steps:
@@ -89,9 +83,9 @@ jobs:
           path: prior-v5-factor-research
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.FACTOR_RUN_ID }}
-      - name: Run strict purged training-only V5 composite OOS
+      - name: Run strict purged canonical training-only V5 composite OOS
         run: >-
-          python run_v5_composite_oos.py
+          python run_v5_composite_canonical_oos.py
           --factor-observations prior-v5-factor-research/output/v5_factor_research/factors/factor_observations.csv
           --data-start 20170101
           --start 20180101
