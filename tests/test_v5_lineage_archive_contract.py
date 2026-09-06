@@ -3,6 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from qmt_quant.workflow_contract import (
+    env_value,
+    load_workflow,
+    normalized_run,
+    structured_text,
+    workflow_events,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "research_lineage" / "v5_c_pre2026.json"
@@ -30,27 +38,24 @@ def test_pre2026_lineage_lock_is_exact_and_holdout_blind():
 
 
 def test_archive_workflow_is_manual_only_and_never_reacquires_data():
-    text = WORKFLOW.read_text(encoding="utf-8")
-    lowered = text.lower()
-    assert "workflow_dispatch:" in text
-    assert "schedule:" not in text
-    assert "workflow_run:" not in text
-    assert "push:" not in text
-    assert 'QMT_QUANT_CACHE_ONLY: "1"' in text
-    assert "download-artifact@v4" in text
-    assert "download_daily_history" not in text
-    # Mentioning the frozen provider version in the lineage assertion is required;
-    # what the archive workflow must never do is import/install/call the provider.
-    assert "import baostock" not in lowered
-    assert "pip install baostock" not in lowered
-    assert "prepare_free_data" not in lowered
-    assert "prepare_pit_exposure" not in lowered
-    assert "gh release create" in text
-    assert "--clobber" not in text
+    workflow = load_workflow(WORKFLOW)
+    assert set(workflow_events(workflow)) == {"workflow_dispatch"}
+    assert env_value(workflow, "QMT_QUANT_CACHE_ONLY") == "1"
+    semantic = structured_text(workflow).lower()
+    assert "actions/download-artifact@v4" in semantic
+    assert "download_daily_history" not in semantic
+    assert "import baostock" not in semantic
+    assert "pip install baostock" not in semantic
+    assert "prepare_free_data" not in semantic
+    assert "prepare_pit_exposure" not in semantic
+    release = normalized_run(workflow, "archive", "Create immutable GitHub Release archive")
+    assert "gh release create" in release
+    assert "--clobber" not in release
 
 
 def test_archive_contract_contains_no_2026_holdout_lineage():
-    combined = LOCK.read_text(encoding="utf-8") + WORKFLOW.read_text(encoding="utf-8")
+    workflow = load_workflow(WORKFLOW)
+    combined = LOCK.read_text(encoding="utf-8") + structured_text(workflow)
     for forbidden in (
         "33963234789",
         "33963542253",

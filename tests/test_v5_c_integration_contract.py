@@ -1,43 +1,69 @@
 from pathlib import Path
 
+from qmt_quant.workflow_contract import (
+    env_value,
+    job,
+    load_workflow,
+    matrix_values,
+    max_parallel,
+    normalized_run,
+    step,
+    structured_text,
+    workflow_events,
+)
+
 
 def test_c_nested_workflow_reuses_frozen_data_and_strict_exposures():
-    text = Path(".github/workflows/v5-c-nested-research.yml").read_text(encoding="utf-8")
-    assert 'SHARD_COUNT: "20"' in text
-    assert 'SOURCE_RUN_ID: "33811845110"' in text
-    assert 'RECOVERY_RUN_ID: "33887254974"' in text
-    assert 'EXPOSURE_RUN_ID: "33963211771"' in text
-    assert 'QMT_QUANT_CACHE_ONLY: "1"' in text
-    assert "workflow_run:" in text
-    assert "- v5-pit-industry-recovery" in text
-    assert "- completed" in text
-    assert "github.event.workflow_run.conclusion == 'success'" in text
-    assert "push:" not in text
-    assert "Remove stale shard 13 from source run" in text
-    assert "Download recovered shard 13" in text
-    assert "Expected exactly 20 historical shard manifests" in text
-    assert "Expected exactly 20 PIT exposure manifests" in text
-    assert "Recovered PIT industry snapshots are not strict-ready" in text
-    assert "--min-symbol-coverage 0.98" in text
-    assert "--min-session-coverage 0.97" in text
-    assert "run_v5_c_nested_research.py" in text
-    assert "qmt-2026-holdout-data" not in text
-    assert "holdout-2026" not in text
-    assert "prepare_free_data_shard.py" not in text
+    workflow = load_workflow(Path(".github/workflows/v5-c-nested-research.yml"))
+    assert env_value(workflow, "SHARD_COUNT") == "20"
+    assert env_value(workflow, "SOURCE_RUN_ID") == "33811845110"
+    assert env_value(workflow, "RECOVERY_RUN_ID") == "33887254974"
+    assert env_value(workflow, "EXPOSURE_RUN_ID") == "33963211771"
+    assert env_value(workflow, "QMT_QUANT_CACHE_ONLY") == "1"
+    events = workflow_events(workflow)
+    assert "push" not in events
+    assert events["workflow_run"]["workflows"] == ["v5-pit-industry-recovery"]
+    assert events["workflow_run"]["types"] == ["completed"]
+    assert "github.event.workflow_run.conclusion == 'success'" in str(job(workflow, "research").get("if"))
+    for name in (
+        "Remove stale shard 13 from source run",
+        "Download recovered shard 13",
+        "Require exactly one complete set of 20 historical shard manifests",
+        "Require exactly 20 strict PIT exposure manifests and strict industry recovery",
+    ):
+        assert step(workflow, "research", name)
+    audit = normalized_run(workflow, "research", "Revalidate full historical data before C research")
+    runner = normalized_run(workflow, "research", "Run strict purged nested V5 C research")
+    assert "--min-symbol-coverage 0.98" in audit
+    assert "--min-session-coverage 0.97" in audit
+    assert "run_v5_c_nested_research.py" in runner
+    semantic = structured_text(workflow)
+    assert "qmt-2026-holdout-data" not in semantic
+    assert "holdout-2026" not in semantic
+    assert "prepare_free_data_shard.py" not in semantic
 
 
 def test_2026_exposure_workflow_is_blinded_and_preserves_sharding():
-    text = Path(".github/workflows/v5-2026-holdout-exposures.yml").read_text(encoding="utf-8")
-    assert 'SHARD_COUNT: "20"' in text
-    assert "max-parallel: 5" in text
-    assert 'DATA_START: "20260101"' in text
-    assert 'DATA_END: "20260904"' in text
-    assert "baostock==0.9.3" in text
-    assert "prepare_pit_exposure_shard.py" in text
-    assert "prepare_pit_industry.py" in text
-    assert "run_backtest" not in text
-    assert "run_v5_c_nested_research.py" not in text
-    assert "holdout result" not in text.lower()
+    workflow = load_workflow(Path(".github/workflows/v5-2026-holdout-exposures.yml"))
+    assert env_value(workflow, "SHARD_COUNT") == "20"
+    assert env_value(workflow, "DATA_START") == "20260101"
+    assert env_value(workflow, "DATA_END") == "20260904"
+    assert max_parallel(workflow, "exposure-shard") == 5
+    assert matrix_values(workflow, "exposure-shard", "shard") == [str(i) for i in range(20)]
+    exposure_install = normalized_run(workflow, "exposure-shard", "Install exposure dependencies")
+    exposure_run = normalized_run(
+        workflow, "exposure-shard", "Download deterministic blinded 2026 float-cap exposure sidecar"
+    )
+    industry_run = normalized_run(
+        workflow, "industry", "Download blinded 2026 monthly PIT industry snapshots"
+    )
+    assert "baostock==0.9.3" in exposure_install
+    assert "prepare_pit_exposure_shard.py" in exposure_run
+    assert "prepare_pit_industry.py" in industry_run
+    semantic = structured_text(workflow).lower()
+    assert "run_backtest" not in semantic
+    assert "run_v5_c_nested_research.py" not in semantic
+    assert "holdout result" not in semantic
 
 
 def test_c_runner_keeps_stock_selection_only_and_basic_alpha_gate():

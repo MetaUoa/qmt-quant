@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from qmt_quant.factors import V5FactorConfig, iter_v5_raw_factors
+from qmt_quant.workflow_contract import env_value, load_workflow, normalized_run, step, structured_text
 
 
 def test_streamed_factor_engine_exposes_expected_research_factors():
@@ -37,16 +38,22 @@ def test_streamed_factor_engine_exposes_expected_research_factors():
 
 
 def test_v5_workflow_reuses_frozen_shards_and_keeps_strict_guards():
-    text = Path(".github/workflows/v5-factor-research.yml").read_text(encoding="utf-8")
-
-    assert 'SHARD_COUNT: "20"' in text
-    assert 'SOURCE_RUN_ID: "33811845110"' in text
-    assert 'RECOVERY_RUN_ID: "33887254974"' in text
-    assert 'QMT_QUANT_CACHE_ONLY: "1"' in text
-    assert "Require exactly one complete set of 20 shard artifacts" in text
-    assert "Remove stale shard 13 from source run" in text
-    assert "Download recovered shard 13" in text
-    assert "--min-symbol-coverage 0.98" in text
-    assert "--min-session-coverage 0.97" in text
-    assert "prepare_free_data_shard.py" not in text
-    assert "prepare_free_data.py" not in text
+    workflow = load_workflow(Path(".github/workflows/v5-factor-research.yml"))
+    assert env_value(workflow, "SHARD_COUNT") == "20"
+    assert env_value(workflow, "SOURCE_RUN_ID") == "33811845110"
+    assert env_value(workflow, "RECOVERY_RUN_ID") == "33887254974"
+    assert env_value(workflow, "QMT_QUANT_CACHE_ONLY") == "1"
+    for name in (
+        "Require exactly one complete set of 20 shard artifacts",
+        "Remove stale shard 13 from source run",
+        "Download recovered shard 13",
+    ):
+        assert step(workflow, "factor-research", name)
+    audit = normalized_run(
+        workflow, "factor-research", "Revalidate full historical data before V5 research"
+    )
+    assert "--min-symbol-coverage 0.98" in audit
+    assert "--min-session-coverage 0.97" in audit
+    semantic = structured_text(workflow)
+    assert "prepare_free_data_shard.py" not in semantic
+    assert "prepare_free_data.py" not in semantic
