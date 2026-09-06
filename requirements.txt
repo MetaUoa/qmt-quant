@@ -6,5 +6,6 @@ pyarrow==25.0.1
 baostock==0.9.3
 akshare==1.18.64
 tushare==1.4.24
+PyYAML==6.0.2
 pytest==9.1.1
 pytest-cov==7.1.0
