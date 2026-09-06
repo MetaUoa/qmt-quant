@@ -19,6 +19,8 @@ def test_full_market_keeps_small_shards_with_five_way_parallelism() -> None:
     assert env_value(workflow, "SHARD_COUNT") == "20"
     assert max_parallel(workflow, "shard") == 5
     assert matrix_values(workflow, "shard", "shard") == [str(i) for i in range(20)]
+    install = normalized_run(workflow, "shard", "Install shard dependencies")
+    assert "baostock==0.9.3" in install
 
 
 def test_full_market_strict_integrity_gates_remain_enabled() -> None:
