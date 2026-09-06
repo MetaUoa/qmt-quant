@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import hashlib
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
+from .backtest_execution import (
+    TradabilityGuard,
+    commission,
+    deterministic_fill,
+    mark_portfolio_value,
+)
 from .config import CostConfig, StrategyConfig
 from .reference_data import ReferenceData
 
@@ -193,106 +198,24 @@ def run_backtest(
     blocked_limit_sell = 0
     blocked_suspend = 0
     blocked_t1_sell = 0
-    missing_suspend_rows = 0
-    missing_limit_rows = 0
     missing_st_dates = 0
     missing_limit_dates = 0
     blocked_random_fill = 0
 
-    def mark_value(i: int, use_open: bool = False) -> float:
-        matrix = open_px if use_open else close_px
-        value = cash
-        ts = calendar[i]
-        for code, shares in positions.items():
-            px = matrix.at[ts, code] if code in matrix.columns else np.nan
-            if not np.isfinite(px) or px <= 0:
-                if reference is not None and not reference.is_member(code, ts, 0):
-                    px = 0.0  # conservative post-delist write-down when no executable quote exists
-                else:
-                    prev = close_px[code].iloc[: i + 1].dropna() if code in close_px.columns else pd.Series(dtype=float)
-                    px = float(prev.iloc[-1]) if len(prev) else 0.0
-            value += shares * float(px)
-        return float(value)
-
-    def should_fill(ts: pd.Timestamp, code: str, side: str) -> bool:
-        probability = min(max(float(cost.fill_probability), 0.0), 1.0)
-        if probability >= 1.0:
-            return True
-        token = f"{cost.fill_seed}|{ts.date()}|{code}|{side}".encode("utf-8")
-        value = int.from_bytes(hashlib.sha256(token).digest()[:8], "big") / float(2**64 - 1)
-        return value <= probability
-
-    def commission(notional: float) -> float:
-        if notional <= 0:
-            return 0.0
-        return max(cost.min_commission, notional * cost.commission_rate)
-
-    def is_halted(ts: pd.Timestamp, code: str) -> bool:
-        nonlocal missing_suspend_rows
-        if code not in open_px.columns:
-            return True
-        op = open_px.at[ts, code]
-        if code not in suspend.columns:
-            if strict_reference:
-                missing_suspend_rows += 1
-                return True
-            return (not np.isfinite(op)) or op <= 0
-        flag = suspend.at[ts, code]
-        if not np.isfinite(flag):
-            if strict_reference:
-                missing_suspend_rows += 1
-                return True
-            return (not np.isfinite(op)) or op <= 0
-        return (not np.isfinite(op)) or op <= 0 or float(flag) == 1.0
-
-    def opening_ratio(ts: pd.Timestamp, code: str) -> float | None:
-        if code not in limit_open_px.columns or code not in limit_preclose_px.columns:
-            return None
-        op = limit_open_px.at[ts, code]
-        prev = limit_preclose_px.at[ts, code]
-        if (not np.isfinite(prev) or prev <= 0) and limit_reference_bars is None:
-            # Compatibility fallback only when raw unadjusted reference bars were not supplied.
-            loc = calendar.get_loc(ts)
-            if isinstance(loc, (int, np.integer)) and loc > 0:
-                prev = close_px.at[calendar[loc - 1], code]
-        if not np.isfinite(op) or not np.isfinite(prev) or prev <= 0:
-            return None
-        return float(op / prev)
-
-    def bar_locked(ts: pd.Timestamp, code: str, side: str) -> bool:
-        # Daily bars cannot reconstruct the intraday path. When exact daily limit data
-        # are unavailable, reject only a one-price board rather than invent touch timing.
-        if code not in open_px.columns:
-            return False
-        vals = [
-            open_px.at[ts, code],
-            high_px.at[ts, code],
-            low_px.at[ts, code],
-            close_px.at[ts, code],
-        ]
-        if not all(np.isfinite(v) and v > 0 for v in vals):
-            return False
-        spread = (max(vals) - min(vals)) / max(abs(float(vals[0])), 1e-12)
-        ratio = opening_ratio(ts, code)
-        if ratio is None or spread > 0.0005:
-            return False
-        return ratio > 1.045 if side == "BUY" else ratio < 0.955
-
-    def limit_blocked(ts: pd.Timestamp, code: str, side: str) -> bool:
-        nonlocal missing_limit_rows
-        ratio = opening_ratio(ts, code)
-        if ratio is None:
-            if reference is not None and strict_reference:
-                missing_limit_rows += 1
-                return True
-            return bar_locked(ts, code, side)
-        if reference is None:
-            return bar_locked(ts, code, side)
-        values = reference.limit_prices(code, ts)
-        if values is None:
-            missing_limit_rows += 1
-            return True if strict_reference else bar_locked(ts, code, side)
-        return reference.limit_blocked(code, ts, ratio, side, tolerance=cost.limit_tolerance)
+    guard = TradabilityGuard(
+        calendar=calendar,
+        open_px=open_px,
+        high_px=high_px,
+        low_px=low_px,
+        close_px=close_px,
+        suspend=suspend,
+        limit_open_px=limit_open_px,
+        limit_preclose_px=limit_preclose_px,
+        reference=reference,
+        strict_reference=bool(strict_reference),
+        raw_limit_reference_supplied=limit_reference_bars is not None,
+        limit_tolerance=float(cost.limit_tolerance),
+    )
 
     delay = max(int(cfg.execution_delay_sessions), 1)
     start_i = min(cfg.warmup + delay - 1, max(len(calendar) - 1, 0))
@@ -348,16 +271,24 @@ def run_backtest(
 
             tradable = []
             for code in selected:
-                if is_halted(ts, code):
+                if guard.is_halted(ts, code):
                     blocked_suspend += 1
                     continue
-                if limit_blocked(ts, code, "BUY"):
+                if guard.limit_blocked(ts, code, "BUY"):
                     blocked_limit_buy += 1
                     continue
                 tradable.append(code)
             selected = tradable
 
-            pre_value = mark_value(i, use_open=True)
+            pre_value = mark_portfolio_value(
+                cash=cash,
+                positions=positions,
+                matrix=open_px,
+                close_px=close_px,
+                calendar=calendar,
+                index=i,
+                reference=reference,
+            )
             exposure = (
                 1.0 if bool(risk_on.loc[signal_ts]) else float(cfg.risk_off_exposure)
             )
@@ -384,18 +315,18 @@ def run_backtest(
                 if not _t1_sell_allowed(last_buy_date.get(code), ts):
                     blocked_t1_sell += 1
                     continue
-                if is_halted(ts, code):
+                if guard.is_halted(ts, code):
                     blocked_suspend += 1
                     continue
-                if limit_blocked(ts, code, "SELL"):
+                if guard.limit_blocked(ts, code, "SELL"):
                     blocked_limit_sell += 1
                     continue
-                if not should_fill(ts, code, "SELL"):
+                if not deterministic_fill(cost, ts, code, "SELL"):
                     blocked_random_fill += 1
                     continue
                 exec_px = float(open_px.at[ts, code]) * (1.0 - slip)
                 notional = qty * exec_px
-                fee = commission(notional)
+                fee = commission(cost, notional)
                 tax = notional * _stamp_tax_rate(ts)
                 cash += notional - fee - tax
                 positions[code] = current - qty
@@ -424,21 +355,21 @@ def run_backtest(
                 if qty <= 0:
                     continue
                 # Tradability was fixed before order sizing; only cash can change after sells.
-                if not should_fill(ts, code, "BUY"):
+                if not deterministic_fill(cost, ts, code, "BUY"):
                     blocked_random_fill += 1
                     continue
                 exec_px = float(open_px.at[ts, code]) * (1.0 + slip)
                 lot = cost.lot_size
                 while qty >= lot:
                     notional = qty * exec_px
-                    fee = commission(notional)
+                    fee = commission(cost, notional)
                     if notional + fee <= cash:
                         break
                     qty -= lot
                 if qty < lot:
                     continue
                 notional = qty * exec_px
-                fee = commission(notional)
+                fee = commission(cost, notional)
                 cash -= notional + fee
                 positions[code] = current + qty
                 last_buy_date[code] = pd.Timestamp(ts).normalize()
@@ -457,7 +388,15 @@ def run_backtest(
                 )
             rebalance_count += 1
 
-        eq = mark_value(i, use_open=False)
+        eq = mark_portfolio_value(
+            cash=cash,
+            positions=positions,
+            matrix=close_px,
+            close_px=close_px,
+            calendar=calendar,
+            index=i,
+            reference=reference,
+        )
         equity_rows.append(
             {
                 "date": ts,
@@ -481,8 +420,8 @@ def run_backtest(
             "blocked_limit_sells": int(blocked_limit_sell),
             "blocked_suspended": int(blocked_suspend),
             "blocked_t1_sells": int(blocked_t1_sell),
-            "missing_suspend_rows": int(missing_suspend_rows),
-            "missing_limit_rows": int(missing_limit_rows),
+            "missing_suspend_rows": int(guard.missing_suspend_rows),
+            "missing_limit_rows": int(guard.missing_limit_rows),
             "missing_st_dates": int(missing_st_dates),
             "missing_limit_dates": int(missing_limit_dates),
             "point_in_time_universe": bool(reference is not None),
