@@ -9,6 +9,7 @@ import pandas as pd
 from .backtest_execution import (
     TradabilityGuard,
     affordable_buy_quantity,
+    build_rebalance_order_plan,
     deterministic_fill,
     equal_weight_target_shares,
     mark_portfolio_value,
@@ -306,16 +307,19 @@ def run_backtest(
                 slippage_bps=cost.slippage_bps,
                 lot_size=cost.lot_size,
             )
+            order_plan = build_rebalance_order_plan(
+                positions=positions,
+                desired=desired,
+                selected=selected,
+            )
 
             # Sell first so cash is available for buys. T+1 is explicit: shares whose
             # most recent acquisition date is today cannot be sold today, even if a
             # future scheduler is changed to permit multiple decisions in one session.
-            for code in list(positions):
+            for intent in order_plan.sells:
+                code = intent.code
                 current = positions.get(code, 0)
-                target = desired.get(code, 0)
-                qty = max(current - target, 0)
-                if qty <= 0:
-                    continue
+                qty = intent.quantity
                 if not _t1_sell_allowed(last_buy_date.get(code), ts):
                     blocked_t1_sell += 1
                     continue
@@ -357,12 +361,10 @@ def run_backtest(
                 )
 
             # Buy second, scaling down each order if cash is insufficient.
-            for code in selected:
+            for intent in order_plan.buys:
+                code = intent.code
                 current = positions.get(code, 0)
-                target = desired.get(code, 0)
-                qty = max(target - current, 0)
-                if qty <= 0:
-                    continue
+                qty = intent.quantity
                 # Tradability was fixed before order sizing; only cash can change after sells.
                 if not deterministic_fill(cost, ts, code, "BUY"):
                     blocked_random_fill += 1

@@ -52,6 +52,22 @@ class BuySettlement:
     commission: float
 
 
+@dataclass(frozen=True)
+class ShareOrderIntent:
+    """One deterministic share delta before fill/tradability execution checks."""
+
+    code: str
+    quantity: int
+
+
+@dataclass(frozen=True)
+class RebalanceOrderPlan:
+    """Sell-first then buy-second order deltas for one rebalance decision."""
+
+    sells: tuple[ShareOrderIntent, ...]
+    buys: tuple[ShareOrderIntent, ...]
+
+
 def settle_sell(
     *,
     cash: float,
@@ -122,6 +138,33 @@ def equal_weight_target_shares(
         lots = int(target_value // (px * int(lot_size)))
         desired[str(code)] = max(lots, 0) * int(lot_size)
     return desired
+
+
+def build_rebalance_order_plan(
+    *,
+    positions: Mapping[str, int],
+    desired: Mapping[str, int],
+    selected: Sequence[str],
+) -> RebalanceOrderPlan:
+    """Compute current-vs-target share deltas without mutating portfolio state.
+
+    Sell intent order preserves current position insertion order, while buy intent
+    order preserves the already-ranked selected sequence. This matches the existing
+    engine before fill, T+1, suspension, limit and cash checks are applied.
+    """
+    sells: list[ShareOrderIntent] = []
+    for code, current_shares in positions.items():
+        quantity = max(int(current_shares) - int(desired.get(code, 0)), 0)
+        if quantity > 0:
+            sells.append(ShareOrderIntent(code=str(code), quantity=quantity))
+
+    buys: list[ShareOrderIntent] = []
+    for code in selected:
+        quantity = max(int(desired.get(code, 0)) - int(positions.get(code, 0)), 0)
+        if quantity > 0:
+            buys.append(ShareOrderIntent(code=str(code), quantity=quantity))
+
+    return RebalanceOrderPlan(sells=tuple(sells), buys=tuple(buys))
 
 
 def affordable_buy_quantity(
