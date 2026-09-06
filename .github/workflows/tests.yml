@@ -44,6 +44,7 @@ jobs:
           qmt_quant/research_policy.py
           qmt_quant/research_contracts.py
           qmt_quant/research_runtime.py
+          qmt_quant/v5_selector.py
           risk/runtime.py
           monitoring/alerts.py
           --ignore-missing-imports
