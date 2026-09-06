@@ -91,7 +91,7 @@ jobs:
           path: prior-v5-oos
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.OOS_RUN_ID }}
-      - name: Run strict canonical B1-B6 research
+      - name: Run strict B1-B6 research
         run: >-
           python run_v5_b_canonical_research.py
           --factor-observations prior-v5-factor-research/output/v5_factor_research/factors/factor_observations.csv
