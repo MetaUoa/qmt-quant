@@ -8,8 +8,10 @@ import pandas as pd
 
 from .backtest_execution import (
     TradabilityGuard,
+    affordable_buy_quantity,
     commission,
     deterministic_fill,
+    equal_weight_target_shares,
     mark_portfolio_value,
 )
 from .config import CostConfig, StrategyConfig
@@ -292,16 +294,16 @@ def run_backtest(
             exposure = (
                 1.0 if bool(risk_on.loc[signal_ts]) else float(cfg.risk_off_exposure)
             )
-            target_value = (
-                pre_value * exposure / max(len(selected), 1) if selected else 0.0
-            )
             slip = cost.slippage_bps / 10_000.0
-
-            desired: Dict[str, int] = {}
-            for code in selected:
-                px = float(open_px.at[ts, code]) * (1.0 + slip)
-                lots = int(target_value // (px * cost.lot_size))
-                desired[code] = max(lots, 0) * cost.lot_size
+            desired = equal_weight_target_shares(
+                selected=selected,
+                open_px=open_px,
+                execution_date=ts,
+                portfolio_value=pre_value,
+                exposure=exposure,
+                slippage_bps=cost.slippage_bps,
+                lot_size=cost.lot_size,
+            )
 
             # Sell first so cash is available for buys. T+1 is explicit: shares whose
             # most recent acquisition date is today cannot be sold today, even if a
@@ -359,14 +361,13 @@ def run_backtest(
                     blocked_random_fill += 1
                     continue
                 exec_px = float(open_px.at[ts, code]) * (1.0 + slip)
-                lot = cost.lot_size
-                while qty >= lot:
-                    notional = qty * exec_px
-                    fee = commission(cost, notional)
-                    if notional + fee <= cash:
-                        break
-                    qty -= lot
-                if qty < lot:
+                qty = affordable_buy_quantity(
+                    requested_shares=qty,
+                    execution_price=exec_px,
+                    cash=cash,
+                    cost=cost,
+                )
+                if qty <= 0:
                     continue
                 notional = qty * exec_px
                 fee = commission(cost, notional)
