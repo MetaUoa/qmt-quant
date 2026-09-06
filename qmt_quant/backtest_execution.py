@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,54 @@ def commission(cost: CostConfig, notional: float) -> float:
     if notional <= 0:
         return 0.0
     return max(float(cost.min_commission), float(notional) * float(cost.commission_rate))
+
+
+def equal_weight_target_shares(
+    *,
+    selected: Sequence[str],
+    open_px: pd.DataFrame,
+    execution_date: pd.Timestamp,
+    portfolio_value: float,
+    exposure: float,
+    slippage_bps: float,
+    lot_size: int,
+) -> dict[str, int]:
+    """Pure equal-weight target sizing used by the daily-bar backtest loop.
+
+    This intentionally mirrors the current engine: target value is divided equally
+    across already-tradable selected names, BUY slippage is applied before lot
+    flooring, and targets are rounded down to whole board lots.
+    """
+    names = list(selected)
+    if not names:
+        return {}
+    target_value = float(portfolio_value) * float(exposure) / len(names)
+    slip = float(slippage_bps) / 10_000.0
+    desired: dict[str, int] = {}
+    for code in names:
+        px = float(open_px.at[execution_date, code]) * (1.0 + slip)
+        lots = int(target_value // (px * int(lot_size)))
+        desired[str(code)] = max(lots, 0) * int(lot_size)
+    return desired
+
+
+def affordable_buy_quantity(
+    *,
+    requested_shares: int,
+    execution_price: float,
+    cash: float,
+    cost: CostConfig,
+) -> int:
+    """Scale a BUY down by board lots until notional plus commission fits cash."""
+    qty = max(int(requested_shares), 0)
+    lot = int(cost.lot_size)
+    while qty >= lot:
+        notional = qty * float(execution_price)
+        fee = commission(cost, notional)
+        if notional + fee <= float(cash):
+            break
+        qty -= lot
+    return qty if qty >= lot else 0
 
 
 def mark_portfolio_value(
