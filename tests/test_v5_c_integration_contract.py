@@ -36,7 +36,8 @@ def test_c_nested_workflow_reuses_frozen_data_and_strict_exposures():
     runner = normalized_run(workflow, "research", "Run strict purged nested V5 C research")
     assert "--min-symbol-coverage 0.98" in audit
     assert "--min-session-coverage 0.97" in audit
-    assert "run_v5_c_nested_research.py" in runner
+    assert "run_v5_c_canonical_research.py" in runner
+    assert "run_v5_c_nested_research.py" not in runner
     semantic = structured_text(workflow)
     assert "qmt-2026-holdout-data" not in semantic
     assert "holdout-2026" not in semantic

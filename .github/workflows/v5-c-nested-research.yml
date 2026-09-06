@@ -130,7 +130,7 @@ jobs:
 
       - name: Run strict purged nested V5 C research
         run: >-
-          python -u run_v5_c_nested_research.py
+          python -u run_v5_c_canonical_research.py
           --exposure-root downloaded-pit-exposures
           --industry-snapshots downloaded-pit-industry/industry_snapshots.parquet
           --data-start 20170101
