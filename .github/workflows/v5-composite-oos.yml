@@ -83,7 +83,7 @@ jobs:
           path: prior-v5-factor-research
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.FACTOR_RUN_ID }}
-      - name: Run strict purged canonical training-only V5 composite OOS
+      - name: Run strict purged training-only V5 composite OOS
         run: >-
           python run_v5_composite_canonical_oos.py
           --factor-observations prior-v5-factor-research/output/v5_factor_research/factors/factor_observations.csv
