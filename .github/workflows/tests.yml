@@ -37,6 +37,10 @@ jobs:
         run: >-
           python -m mypy
           qmt_quant/production_candidate.py
+          qmt_quant/v5_gates.py
+          qmt_quant/adjustment_provenance.py
+          qmt_quant/backtest_execution.py
+          qmt_quant/research_contracts.py
           risk/runtime.py
           monitoring/alerts.py
           --ignore-missing-imports
