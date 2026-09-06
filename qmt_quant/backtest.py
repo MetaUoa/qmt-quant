@@ -328,7 +328,7 @@ def run_backtest(
                     blocked_random_fill += 1
                     continue
                 exec_px = float(open_px.at[ts, code]) * (1.0 - slip)
-                settlement = settle_sell(
+                sell_settlement = settle_sell(
                     cash=cash,
                     current_shares=current,
                     quantity=qty,
@@ -336,8 +336,8 @@ def run_backtest(
                     cost=cost,
                     stamp_tax_rate=_stamp_tax_rate(ts),
                 )
-                cash = settlement.ending_cash
-                positions[code] = settlement.ending_shares
+                cash = sell_settlement.ending_cash
+                positions[code] = sell_settlement.ending_shares
                 if positions[code] <= 0:
                     del positions[code]
                     last_buy_date.pop(code, None)
@@ -348,9 +348,9 @@ def run_backtest(
                         "side": "SELL",
                         "shares": qty,
                         "price": exec_px,
-                        "notional": settlement.notional,
-                        "commission": settlement.commission,
-                        "stamp_tax": settlement.stamp_tax,
+                        "notional": sell_settlement.notional,
+                        "commission": sell_settlement.commission,
+                        "stamp_tax": sell_settlement.stamp_tax,
                         "signal_date": signal_ts,
                     }
                 )
@@ -375,15 +375,15 @@ def run_backtest(
                 )
                 if qty <= 0:
                     continue
-                settlement = settle_buy(
+                buy_settlement = settle_buy(
                     cash=cash,
                     current_shares=current,
                     quantity=qty,
                     execution_price=exec_px,
                     cost=cost,
                 )
-                cash = settlement.ending_cash
-                positions[code] = settlement.ending_shares
+                cash = buy_settlement.ending_cash
+                positions[code] = buy_settlement.ending_shares
                 last_buy_date[code] = pd.Timestamp(ts).normalize()
                 trade_rows.append(
                     {
@@ -392,8 +392,8 @@ def run_backtest(
                         "side": "BUY",
                         "shares": qty,
                         "price": exec_px,
-                        "notional": settlement.notional,
-                        "commission": settlement.commission,
+                        "notional": buy_settlement.notional,
+                        "commission": buy_settlement.commission,
                         "stamp_tax": 0.0,
                         "signal_date": signal_ts,
                     }
