@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from qmt_quant.workflow_contract import load_workflow, matrix_values, normalized_run
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REQ = ROOT / "requirements.txt"
@@ -22,8 +24,9 @@ def test_all_repository_requirements_are_exactly_pinned():
 
 
 def test_ci_installs_the_same_locked_requirements_on_all_python_versions():
-    text = CI.read_text(encoding="utf-8")
-    assert 'python-version: ["3.10", "3.11", "3.12"]' in text
-    assert "python -m pip install -r requirements.txt" in text
-    assert "python -m pip check" in text
-    assert "python -m pip install numpy pandas pyarrow pytest pytest-cov" not in text
+    workflow = load_workflow(CI)
+    assert matrix_values(workflow, "offline-tests", "python-version") == ["3.10", "3.11", "3.12"]
+    install = normalized_run(workflow, "offline-tests", "Install locked repository dependencies")
+    assert "python -m pip install -r requirements.txt" in install
+    assert "python -m pip check" in install
+    assert "python -m pip install numpy pandas pyarrow pytest pytest-cov" not in install
