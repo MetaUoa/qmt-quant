@@ -6,6 +6,7 @@ import pandas as pd
 from qmt_quant.backtest_execution import (
     TradabilityGuard,
     affordable_buy_quantity,
+    build_rebalance_order_plan,
     commission,
     deterministic_fill,
     equal_weight_target_shares,
@@ -54,6 +55,35 @@ def test_equal_weight_target_shares_matches_current_lot_flooring():
         slippage_bps=10.0,
         lot_size=100,
     ) == {}
+
+
+def test_rebalance_order_plan_preserves_sell_and_selected_buy_order():
+    positions = {
+        "KEEP.SZ": 200,
+        "EXIT.SZ": 300,
+        "TRIM.SZ": 500,
+    }
+    desired = {
+        "KEEP.SZ": 400,
+        "TRIM.SZ": 200,
+        "NEW.SZ": 600,
+    }
+    plan = build_rebalance_order_plan(
+        positions=positions,
+        desired=desired,
+        selected=["KEEP.SZ", "TRIM.SZ", "NEW.SZ"],
+    )
+
+    assert [(intent.code, intent.quantity) for intent in plan.sells] == [
+        ("EXIT.SZ", 300),
+        ("TRIM.SZ", 300),
+    ]
+    assert [(intent.code, intent.quantity) for intent in plan.buys] == [
+        ("KEEP.SZ", 200),
+        ("NEW.SZ", 600),
+    ]
+    assert positions == {"KEEP.SZ": 200, "EXIT.SZ": 300, "TRIM.SZ": 500}
+    assert desired == {"KEEP.SZ": 400, "TRIM.SZ": 200, "NEW.SZ": 600}
 
 
 def test_affordable_buy_quantity_scales_down_by_board_lots_with_commission():
