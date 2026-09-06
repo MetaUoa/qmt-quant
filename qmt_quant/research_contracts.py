@@ -32,11 +32,10 @@ def coverage_or_fail(
     return ratio, report
 
 
-def strict_signal_eligibility(
+def research_signal_eligibility(
     *,
     raw_close: pd.DataFrame,
     amount: pd.DataFrame,
-    suspend: pd.DataFrame,
     dates: pd.DatetimeIndex,
     reference: ReferenceData,
     universe: list[str],
@@ -44,25 +43,34 @@ def strict_signal_eligibility(
     min_amount: float,
     min_listing_sessions: int,
     amount_window: int,
+    suspend: pd.DataFrame | None = None,
+    require_same_day_tradable: bool = False,
     context: str = "research",
 ) -> pd.DataFrame:
-    """Canonical strict V5 signal-date eligibility.
+    """Canonical research eligibility with an explicit tradability policy.
 
-    This intentionally matches the repaired V5-C meaning: the stock must have a
-    valid raw price, sufficient trailing liquidity, positive same-day turnover, an
-    explicit non-suspended state, PIT membership, and a non-ST snapshot on the exact
-    signal date.  Missing suspension state is therefore ineligible, not assumed false.
+    Historical B/composite/factor diagnostics used raw-price + trailing-liquidity +
+    PIT-membership/ST eligibility, while repaired V5-C additionally requires positive
+    same-day turnover and an explicit ``suspendFlag == 0``. Keeping that distinction
+    as an explicit argument removes duplicated implementations without silently
+    rewriting already-frozen historical research semantics.
     """
     target_dates = pd.DatetimeIndex(dates).normalize().sort_values().unique()
-    avg_amount = amount.rolling(amount_window, min_periods=amount_window).mean().reindex(target_dates)
-    same_day_amount = amount.reindex(target_dates).apply(pd.to_numeric, errors="coerce")
-    same_day_suspend = suspend.reindex(target_dates).apply(pd.to_numeric, errors="coerce")
-    tradable = same_day_suspend.eq(0.0) & same_day_amount.gt(0.0)
-    mask = (
-        raw_close.reindex(target_dates).ge(float(min_price))
-        & avg_amount.ge(float(min_amount))
-        & tradable
+    avg_amount = amount.rolling(amount_window, min_periods=amount_window).mean().reindex(
+        target_dates
     )
+    mask = raw_close.reindex(target_dates).ge(float(min_price)) & avg_amount.ge(
+        float(min_amount)
+    )
+    if require_same_day_tradable:
+        if suspend is None:
+            raise ValueError("same-day tradability requires a suspension panel")
+        same_day_amount = amount.reindex(target_dates).apply(pd.to_numeric, errors="coerce")
+        same_day_suspend = suspend.reindex(target_dates).apply(
+            pd.to_numeric, errors="coerce"
+        )
+        mask &= same_day_suspend.eq(0.0) & same_day_amount.gt(0.0)
+
     columns = mask.columns
     for ts in target_dates:
         if ts not in reference.st_dates:
@@ -77,6 +85,37 @@ def strict_signal_eligibility(
         allowed = members.difference(reference.st_codes(ts))
         mask.loc[ts, :] &= columns.isin(allowed)
     return mask
+
+
+def strict_signal_eligibility(
+    *,
+    raw_close: pd.DataFrame,
+    amount: pd.DataFrame,
+    suspend: pd.DataFrame,
+    dates: pd.DatetimeIndex,
+    reference: ReferenceData,
+    universe: list[str],
+    min_price: float,
+    min_amount: float,
+    min_listing_sessions: int,
+    amount_window: int,
+    context: str = "research",
+) -> pd.DataFrame:
+    """Canonical repaired V5-C same-day strict signal-date eligibility."""
+    return research_signal_eligibility(
+        raw_close=raw_close,
+        amount=amount,
+        suspend=suspend,
+        dates=dates,
+        reference=reference,
+        universe=universe,
+        min_price=min_price,
+        min_amount=min_amount,
+        min_listing_sessions=min_listing_sessions,
+        amount_window=amount_window,
+        require_same_day_tradable=True,
+        context=context,
+    )
 
 
 def assert_strict_research_metrics(metrics: Mapping[str, object], label: str) -> None:
