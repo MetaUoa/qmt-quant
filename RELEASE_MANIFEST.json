@@ -1,14 +1,39 @@
 {
-  "version": "3.7.0",
-  "scope": "V2.2 data audit through V7 guarded MiniQMT execution",
-  "offline_verification": {
-    "status": "PASS",
-    "tests_passed": 31,
-    "tests_skipped": 1,
-    "core_coverage_percent": 65.76,
-    "coverage_gate_percent": 60
+  "schema": "qmt-repository-state-v1",
+  "research_stage": "V5-C pre-2026 stock-selection research",
+  "research_data_end": "2025-12-31",
+  "holdout_2026_blinded": true,
+  "basic_alpha_gate": {
+    "c1": "FAIL",
+    "c7": "FAIL",
+    "production_promotion_allowed": false
   },
-  "real_qmt_2018_2025_result": "NOT_RUN_IN_CONTAINER",
-  "reason": "The user's MiniQMT/QMT local historical database and brokerage session are not available in this environment.",
-  "claim_policy": "150x is reported as passed only when V5 acceptance grade A passes on the user's real strict QMT run."
+  "frozen_lineage": {
+    "lock": "research_lineage/v5_c_pre2026.json",
+    "release_tag": "v5-c-pre2026-frozen-lineage-v1",
+    "historical_shards": 20,
+    "max_parallel": 5,
+    "baostock": "0.9.3"
+  },
+  "data_gates": {
+    "min_symbol_coverage": 0.98,
+    "min_session_coverage": 0.97,
+    "pit_universe": "fail-closed",
+    "st": "fail-closed",
+    "suspension": "fail-closed",
+    "price_limits": "fail-closed",
+    "raw_reference": "fail-closed"
+  },
+  "offline_verification": {
+    "status_source": "GitHub Actions automated-tests on the exact commit",
+    "test_count": "dynamic; do not hardcode",
+    "python_versions": ["3.10", "3.11", "3.12"],
+    "requirements": "exact-pinned requirements.txt"
+  },
+  "production_state": {
+    "live_default": "dry-run",
+    "v5_production_scorer": "NOT_IMPLEMENTED",
+    "candidate_policy": "fail-closed until exact research/holdout/acceptance lineage is satisfied"
+  },
+  "claim_policy": "Do not reveal or evaluate 2026 strategy performance until the pre-2026 Basic Alpha Gate passes and an exact frozen candidate SHA256 exists."
 }

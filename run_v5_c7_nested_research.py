@@ -4,6 +4,8 @@ import sys
 
 import run_v5_c_nested_research as c1
 
+from qmt_quant.research_runtime import install_v5_c_contracts
+
 
 _MAX_RESEARCH_END = "20251231"
 _OriginalCoreAlphaPolicy = c1.CoreAlphaPolicy
@@ -42,6 +44,7 @@ def _c7_frozen_candidate(*args, **kwargs):
 
 def main() -> int:
     _assert_pre_2026_only(sys.argv[1:])
+    install_v5_c_contracts(c1)
     c1.CoreAlphaPolicy = _stability_policy
     c1.FrozenCandidate = _c7_frozen_candidate
     return c1.main()

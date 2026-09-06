@@ -7,6 +7,14 @@ from qmt_quant.pit_exposures import (
     asof_industry_panel,
     turnover_implied_float_market_cap,
 )
+from qmt_quant.workflow_contract import (
+    env_value,
+    load_workflow,
+    matrix_values,
+    max_parallel,
+    normalized_run,
+    structured_text,
+)
 
 
 def test_turnover_implied_float_market_cap_uses_same_day_fields():
@@ -40,11 +48,17 @@ def test_industry_panel_only_forward_fills_from_past_snapshots():
 
 
 def test_pit_exposure_workflow_preserves_sharding_and_baostock_pin():
-    text = Path(".github/workflows/v5-pit-exposures.yml").read_text(encoding="utf-8")
-    assert 'SHARD_COUNT: "20"' in text
-    assert "max-parallel: 5" in text
-    assert "matrix:" in text and "19]" in text
-    assert "baostock==0.9.3" in text
-    assert "prepare_pit_exposure_shard.py" in text
-    assert "prepare_pit_industry.py" in text
-    assert "prepare_free_data.py" not in text
+    workflow = load_workflow(Path(".github/workflows/v5-pit-exposures.yml"))
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    assert env_value(workflow, "SHARD_COUNT") == "20"
+    assert max_parallel(workflow, "exposure-shard") == 5
+    assert matrix_values(workflow, "exposure-shard", "shard") == [str(i) for i in range(20)]
+    install = normalized_run(workflow, "exposure-shard", "Install exposure dependencies")
+    exposure = normalized_run(
+        workflow, "exposure-shard", "Download deterministic PIT float-cap sidecar"
+    )
+    industry = normalized_run(workflow, "industry", "Download monthly PIT industry snapshots")
+    assert "baostock==0.9.3" in install
+    assert "prepare_pit_exposure_shard.py" in exposure
+    assert "prepare_pit_industry.py" in industry
+    assert "prepare_free_data.py" not in structured_text(workflow)
