@@ -2,19 +2,6 @@ name: v5-b-research
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/v5-b-research.yml"
-      - "run_v5_b_research.py"
-      - "qmt_quant/factor_attribution.py"
-      - "qmt_quant/quantile_profiles.py"
-      - "qmt_quant/neutralization.py"
-      - "qmt_quant/residual_strength.py"
-      - "qmt_quant/regime_weighting.py"
-      - "qmt_quant/ablation.py"
-      - "qmt_quant/factors.py"
 
 permissions:
   contents: read
@@ -36,7 +23,7 @@ env:
 
 jobs:
   v5-b-research:
-    name: Full-market V5 B1-B6 research
+    name: Full-market V5 B1-B6 canonical research
     runs-on: windows-latest
     timeout-minutes: 300
     steps:
@@ -104,9 +91,9 @@ jobs:
           path: prior-v5-oos
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.OOS_RUN_ID }}
-      - name: Run strict B1-B6 research
+      - name: Run strict canonical B1-B6 research
         run: >-
-          python run_v5_b_research.py
+          python run_v5_b_canonical_research.py
           --factor-observations prior-v5-factor-research/output/v5_factor_research/factors/factor_observations.csv
           --fold-selections prior-v5-oos/output/v5_composite_oos/research/fold_selections.json
           --baseline-folds prior-v5-oos/output/v5_composite_oos/research/walk_forward_folds.csv
