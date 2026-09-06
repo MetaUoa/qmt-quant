@@ -7,6 +7,8 @@ import shutil
 
 import pandas as pd
 
+from qmt_quant.adjustment_provenance import validate_shard_adjustment_provenance
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Merge deterministic BaoStock shard artifacts")
@@ -91,6 +93,8 @@ def merge_shards(
         raise RuntimeError(
             f"Missing shard indexes: {sorted(set(range(shard_count)) - shard_indexes)}"
         )
+
+    adjusted_provenance, raw_provenance = validate_shard_adjustment_provenance(manifests)
 
     basic_parts = []
     calendar_parts = []
@@ -186,6 +190,10 @@ def merge_shards(
         "symbols": len(expected),
         "adjusted_symbols_cached": len(expected & front_codes),
         "raw_symbols_cached": len(expected & raw_codes),
+        "adjustment_provenance": {
+            "adjusted": adjusted_provenance,
+            "raw": raw_provenance,
+        },
         "strict_ready": strict_ready,
         "errors": errors,
     }
