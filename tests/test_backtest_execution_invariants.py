@@ -3,16 +3,17 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from qmt_quant.backtest import _panel, _t1_sell_allowed
+from qmt_quant.backtest import _panel
 from qmt_quant.backtest_execution import TradabilityGuard
 from qmt_quant.backtest_reporting import BacktestDiagnostics, assemble_backtest_metrics
+from qmt_quant.backtest_sell_execution import t1_sell_allowed
 
 
 def test_t1_sellability_is_explicit_by_calendar_date():
-    assert _t1_sell_allowed(None, pd.Timestamp("2025-01-03")) is True
-    assert _t1_sell_allowed(pd.Timestamp("2025-01-02"), pd.Timestamp("2025-01-03")) is True
-    assert _t1_sell_allowed(pd.Timestamp("2025-01-03 09:31"), pd.Timestamp("2025-01-03 14:55")) is False
-    assert _t1_sell_allowed(pd.Timestamp("2025-01-04"), pd.Timestamp("2025-01-03")) is False
+    assert t1_sell_allowed(None, pd.Timestamp("2025-01-03")) is True
+    assert t1_sell_allowed(pd.Timestamp("2025-01-02"), pd.Timestamp("2025-01-03")) is True
+    assert t1_sell_allowed(pd.Timestamp("2025-01-03 09:31"), pd.Timestamp("2025-01-03 14:55")) is False
+    assert t1_sell_allowed(pd.Timestamp("2025-01-04"), pd.Timestamp("2025-01-03")) is False
 
 
 def test_panel_concat_preserves_calendar_alignment_and_symbol_order():

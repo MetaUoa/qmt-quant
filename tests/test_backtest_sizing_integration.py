@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 import qmt_quant.backtest as backtest
+import qmt_quant.backtest_sell_execution as sell_execution
 from qmt_quant.backtest_execution import (
     affordable_buy_quantity as real_affordable_buy_quantity,
     deterministic_fill as real_deterministic_fill,
@@ -85,7 +86,10 @@ def test_backtest_routes_target_cash_sizing_and_fill_through_pure_helpers(monkey
 
     monkeypatch.setattr(backtest, "equal_weight_target_shares", tracked_target)
     monkeypatch.setattr(backtest, "affordable_buy_quantity", tracked_affordable)
+    # BUY remains in the orchestration loop while SELL fill now lives inside the
+    # extracted decision helper. Track both call sites to preserve the invariant.
     monkeypatch.setattr(backtest, "deterministic_fill", tracked_fill)
+    monkeypatch.setattr(sell_execution, "deterministic_fill", tracked_fill)
 
     result = backtest.run_backtest(
         bars,
