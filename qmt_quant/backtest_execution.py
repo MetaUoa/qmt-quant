@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-from typing import Mapping, Sequence
+from typing import Mapping, MutableMapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -109,6 +109,35 @@ def settle_buy(
         notional=float(notional),
         commission=float(fee),
     )
+
+
+def apply_sell_position_mutation(
+    *,
+    positions: MutableMapping[str, int],
+    last_buy_date: MutableMapping[str, pd.Timestamp],
+    code: str,
+    ending_shares: int,
+) -> None:
+    """Apply the existing post-SELL position lifecycle without changing accounting."""
+    remaining = int(ending_shares)
+    if remaining > 0:
+        positions[str(code)] = remaining
+        return
+    positions.pop(str(code), None)
+    last_buy_date.pop(str(code), None)
+
+
+def apply_buy_position_mutation(
+    *,
+    positions: MutableMapping[str, int],
+    last_buy_date: MutableMapping[str, pd.Timestamp],
+    code: str,
+    ending_shares: int,
+    execution_date: pd.Timestamp,
+) -> None:
+    """Apply the existing post-BUY share state and normalized T+1 acquisition date."""
+    positions[str(code)] = int(ending_shares)
+    last_buy_date[str(code)] = pd.Timestamp(execution_date).normalize()
 
 
 def equal_weight_target_shares(
