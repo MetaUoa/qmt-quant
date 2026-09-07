@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 import qmt_quant.backtest as backtest
-from qmt_quant.backtest_execution import filter_execution_candidates as real_filter
+from qmt_quant.backtest_execution import (
+    TradabilityGuard,
+    filter_execution_candidates as real_filter,
+)
 from qmt_quant.config import CostConfig, StrategyConfig
 
 
@@ -66,7 +71,7 @@ def test_filter_execution_candidates_preserves_short_circuit_and_rank_order() ->
 
     result = real_filter(
         candidates=("HALT", "LIMIT", "OK"),
-        guard=guard,  # type: ignore[arg-type]
+        guard=cast(TradabilityGuard, guard),
         execution_date=ts,
     )
 
