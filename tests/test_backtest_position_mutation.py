@@ -94,7 +94,10 @@ def test_run_backtest_routes_buy_and_sell_state_through_mutation_helpers(monkeyp
     }
     score = pd.DataFrame(1.0, index=index, columns=["AAA.SZ"])
     risk_on = pd.Series(False, index=index)
-    risk_on.iloc[:5] = True
+    # With all lookbacks/min-listing set to 1, StrategyConfig.warmup is 6 and
+    # the first delayed signal is index 5. Keep the early window risk-on long
+    # enough to guarantee a BUY, then turn it off to force the later SELL path.
+    risk_on.iloc[:8] = True
     costs = CostConfig(
         initial_cash=100_000.0,
         commission_rate=0.00025,
