@@ -6,13 +6,12 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
+from .backtest_buy_execution import evaluate_buy_execution
 from .backtest_execution import (
     TradabilityGuard,
-    affordable_buy_quantity,
     apply_buy_position_mutation,
     apply_sell_position_mutation,
     build_rebalance_order_plan,
-    deterministic_fill,
     equal_weight_target_shares,
     filter_execution_candidates,
     mark_portfolio_value,
@@ -346,24 +345,24 @@ def run_backtest(
                     )
                 )
 
-            # Buy second, scaling down each order if cash is insufficient.
+            # Buy second. The decision helper preserves deterministic fill before
+            # BUY slippage and board-lot cash scaling; settlement remains unchanged.
             for intent in order_plan.buys:
                 code = intent.code
                 current = positions.get(code, 0)
-                qty = intent.quantity
-                # Tradability was fixed before order sizing; only cash can change after sells.
-                if not deterministic_fill(cost, ts, code, "BUY"):
-                    blocked_random_fill += 1
-                    continue
-                exec_px = float(open_px.at[ts, code]) * (1.0 + slip)
-                qty = affordable_buy_quantity(
-                    requested_shares=qty,
-                    execution_price=exec_px,
+                buy_decision = evaluate_buy_execution(
+                    requested_shares=intent.quantity,
+                    open_price=float(open_px.at[ts, code]),
                     cash=cash,
+                    execution_date=ts,
+                    code=code,
                     cost=cost,
                 )
-                if qty <= 0:
+                blocked_random_fill += buy_decision.blocked_random_fill
+                if not buy_decision.ready or buy_decision.execution_price is None:
                     continue
+                qty = buy_decision.quantity
+                exec_px = float(buy_decision.execution_price)
                 buy_settlement = settle_buy(
                     cash=cash,
                     current_shares=current,
