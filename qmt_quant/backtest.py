@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .backtest_buy_execution import evaluate_buy_execution
+from .backtest_equity import build_equity_row
 from .backtest_execution import (
     TradabilityGuard,
     apply_buy_position_mutation,
@@ -226,13 +227,13 @@ def run_backtest(
     for i, ts in enumerate(calendar):
         if i < start_i:
             equity_rows.append(
-                {
-                    "date": ts,
-                    "equity": cash,
-                    "cash": cash,
-                    "positions": 0,
-                    "risk_on": False,
-                }
+                build_equity_row(
+                    date=ts,
+                    equity=cash,
+                    cash=cash,
+                    position_count=0,
+                    risk_on=False,
+                )
             )
             continue
 
@@ -400,13 +401,13 @@ def run_backtest(
             reference=reference,
         )
         equity_rows.append(
-            {
-                "date": ts,
-                "equity": eq,
-                "cash": cash,
-                "positions": len(positions),
-                "risk_on": bool(risk_on.loc[ts]) if pd.notna(risk_on.loc[ts]) else False,
-            }
+            build_equity_row(
+                date=ts,
+                equity=eq,
+                cash=cash,
+                position_count=len(positions),
+                risk_on=bool(risk_on.loc[ts]) if pd.notna(risk_on.loc[ts]) else False,
+            )
         )
 
     equity = pd.DataFrame(equity_rows).set_index("date")
