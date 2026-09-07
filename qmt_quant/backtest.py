@@ -21,6 +21,7 @@ from .backtest_execution import (
 )
 from .backtest_reporting import BacktestDiagnostics, assemble_backtest_metrics
 from .backtest_selection import select_rebalance_candidates
+from .backtest_trades import build_buy_trade_row, build_sell_trade_row
 from .config import CostConfig, StrategyConfig
 from .reference_data import ReferenceData
 
@@ -340,17 +341,14 @@ def run_backtest(
                     ending_shares=sell_settlement.ending_shares,
                 )
                 trade_rows.append(
-                    {
-                        "date": ts,
-                        "code": code,
-                        "side": "SELL",
-                        "shares": qty,
-                        "price": exec_px,
-                        "notional": sell_settlement.notional,
-                        "commission": sell_settlement.commission,
-                        "stamp_tax": sell_settlement.stamp_tax,
-                        "signal_date": signal_ts,
-                    }
+                    build_sell_trade_row(
+                        execution_date=ts,
+                        signal_date=signal_ts,
+                        code=code,
+                        shares=qty,
+                        execution_price=exec_px,
+                        settlement=sell_settlement,
+                    )
                 )
 
             # Buy second, scaling down each order if cash is insufficient.
@@ -387,17 +385,14 @@ def run_backtest(
                     execution_date=ts,
                 )
                 trade_rows.append(
-                    {
-                        "date": ts,
-                        "code": code,
-                        "side": "BUY",
-                        "shares": qty,
-                        "price": exec_px,
-                        "notional": buy_settlement.notional,
-                        "commission": buy_settlement.commission,
-                        "stamp_tax": 0.0,
-                        "signal_date": signal_ts,
-                    }
+                    build_buy_trade_row(
+                        execution_date=ts,
+                        signal_date=signal_ts,
+                        code=code,
+                        shares=qty,
+                        execution_price=exec_px,
+                        settlement=buy_settlement,
+                    )
                 )
             rebalance_count += 1
 
