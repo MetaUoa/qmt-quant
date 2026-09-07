@@ -21,6 +21,7 @@ from .backtest_execution import (
 )
 from .backtest_reporting import BacktestDiagnostics, assemble_backtest_metrics
 from .backtest_selection import select_rebalance_candidates
+from .backtest_sell_execution import evaluate_sell_execution
 from .config import CostConfig, StrategyConfig
 from .reference_data import ReferenceData
 
@@ -36,12 +37,6 @@ class BacktestResult:
 def _stamp_tax_rate(ts: pd.Timestamp) -> float:
     # A-share sell-side stamp duty: 0.10% before 2023-08-28, 0.05% after.
     return 0.0005 if ts >= pd.Timestamp("2023-08-28") else 0.0010
-
-
-def _t1_sell_allowed(last_buy_date: pd.Timestamp | None, execution_date: pd.Timestamp) -> bool:
-    if last_buy_date is None:
-        return True
-    return pd.Timestamp(last_buy_date).normalize() < pd.Timestamp(execution_date).normalize()
 
 
 def _panel(bars: Dict[str, pd.DataFrame], field: str, calendar: pd.DatetimeIndex) -> pd.DataFrame:
@@ -304,24 +299,24 @@ def run_backtest(
                 selected=selected,
             )
 
-            # Sell first so cash is available for buys. T+1 is explicit: shares whose
-            # most recent acquisition date is today cannot be sold today, even if a
-            # future scheduler is changed to permit multiple decisions in one session.
+            # Sell first so cash is available for buys. The decision helper preserves
+            # the historical T+1 -> suspension -> SELL limit -> deterministic fill order.
             for intent in order_plan.sells:
                 code = intent.code
                 current = positions.get(code, 0)
                 qty = intent.quantity
-                if not _t1_sell_allowed(last_buy_date.get(code), ts):
-                    blocked_t1_sell += 1
-                    continue
-                if guard.is_halted(ts, code):
-                    blocked_suspend += 1
-                    continue
-                if guard.limit_blocked(ts, code, "SELL"):
-                    blocked_limit_sell += 1
-                    continue
-                if not deterministic_fill(cost, ts, code, "SELL"):
-                    blocked_random_fill += 1
+                sell_decision = evaluate_sell_execution(
+                    last_buy_date=last_buy_date.get(code),
+                    execution_date=ts,
+                    code=code,
+                    cost=cost,
+                    guard=guard,
+                )
+                blocked_t1_sell += sell_decision.blocked_t1_sells
+                blocked_suspend += sell_decision.blocked_suspended
+                blocked_limit_sell += sell_decision.blocked_limit_sells
+                blocked_random_fill += sell_decision.blocked_random_fill
+                if not sell_decision.ready:
                     continue
                 exec_px = float(open_px.at[ts, code]) * (1.0 - slip)
                 sell_settlement = settle_sell(
