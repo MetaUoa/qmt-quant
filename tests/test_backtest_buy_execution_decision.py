@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 import qmt_quant.backtest as backtest
 import qmt_quant.backtest_buy_execution as buy_execution
@@ -93,7 +94,7 @@ def test_buy_decision_preserves_fill_then_price_then_cash_scaling(monkeypatch) -
     )
     assert not unaffordable.ready
     assert unaffordable.quantity == 0
-    assert unaffordable.execution_price == 10.01
+    assert unaffordable.execution_price == pytest.approx(10.01)
     assert unaffordable.blocked_random_fill == 0
 
     monkeypatch.setattr(
@@ -111,7 +112,7 @@ def test_buy_decision_preserves_fill_then_price_then_cash_scaling(monkeypatch) -
     )
     assert ready.ready
     assert ready.quantity == 200
-    assert ready.execution_price == 10.01
+    assert ready.execution_price == pytest.approx(10.01)
     assert ready.blocked_random_fill == 0
 
 
