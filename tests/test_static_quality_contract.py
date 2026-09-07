@@ -16,6 +16,8 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
         "qmt_quant/backtest_execution.py",
         "qmt_quant/backtest_reporting.py",
         "qmt_quant/backtest_selection.py",
+        "qmt_quant/reference_data.py",
+        "qmt_quant/research_policy.py",
         "qmt_quant/research_contracts.py",
         "qmt_quant/research_runtime.py",
         "risk/runtime.py",
