@@ -14,6 +14,7 @@ from .backtest_execution import (
     build_rebalance_order_plan,
     deterministic_fill,
     equal_weight_target_shares,
+    filter_execution_candidates,
     mark_portfolio_value,
     settle_buy,
     settle_sell,
@@ -266,18 +267,14 @@ def run_backtest(
                 reference=reference,
             )
             blocked_st += selection.blocked_st_candidates
-            selected = list(selection.selected)
-
-            tradable = []
-            for code in selected:
-                if guard.is_halted(ts, code):
-                    blocked_suspend += 1
-                    continue
-                if guard.limit_blocked(ts, code, "BUY"):
-                    blocked_limit_buy += 1
-                    continue
-                tradable.append(code)
-            selected = tradable
+            execution_selection = filter_execution_candidates(
+                candidates=selection.selected,
+                guard=guard,
+                execution_date=ts,
+            )
+            blocked_suspend += execution_selection.blocked_suspended
+            blocked_limit_buy += execution_selection.blocked_limit_buys
+            selected = list(execution_selection.selected)
 
             pre_value = mark_portfolio_value(
                 cash=cash,

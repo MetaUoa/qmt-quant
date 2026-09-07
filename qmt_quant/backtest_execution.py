@@ -68,6 +68,15 @@ class RebalanceOrderPlan:
     buys: tuple[ShareOrderIntent, ...]
 
 
+@dataclass(frozen=True)
+class ExecutionCandidateFilterResult:
+    """Execution-day BUY eligibility result before target sizing."""
+
+    selected: tuple[str, ...]
+    blocked_suspended: int = 0
+    blocked_limit_buys: int = 0
+
+
 def settle_sell(
     *,
     cash: float,
@@ -241,6 +250,36 @@ def mark_portfolio_value(
                 px = float(previous.iloc[-1]) if len(previous) else 0.0
         value += int(shares) * float(px)
     return float(value)
+
+
+def filter_execution_candidates(
+    *,
+    candidates: Sequence[str],
+    guard: TradabilityGuard,
+    execution_date: pd.Timestamp,
+) -> ExecutionCandidateFilterResult:
+    """Apply the existing execution-day BUY halt/limit checks in ranked order.
+
+    The halt check intentionally short-circuits before the BUY limit check, matching
+    the historical loop and preserving both blocked counters and guard side effects.
+    Target sizing, fills, T+1, cash and settlement remain outside this helper.
+    """
+    selected: list[str] = []
+    blocked_suspended = 0
+    blocked_limit_buys = 0
+    for code in candidates:
+        if guard.is_halted(execution_date, code):
+            blocked_suspended += 1
+            continue
+        if guard.limit_blocked(execution_date, code, "BUY"):
+            blocked_limit_buys += 1
+            continue
+        selected.append(str(code))
+    return ExecutionCandidateFilterResult(
+        selected=tuple(selected),
+        blocked_suspended=int(blocked_suspended),
+        blocked_limit_buys=int(blocked_limit_buys),
+    )
 
 
 @dataclass
