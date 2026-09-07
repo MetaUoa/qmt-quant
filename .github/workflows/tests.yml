@@ -42,6 +42,8 @@ jobs:
           qmt_quant/backtest_execution.py
           qmt_quant/backtest_reporting.py
           qmt_quant/backtest_selection.py
+          qmt_quant/backtest_sell_execution.py
+          qmt_quant/backtest_trades.py
           qmt_quant/reference_data.py
           qmt_quant/research_policy.py
           qmt_quant/research_contracts.py
