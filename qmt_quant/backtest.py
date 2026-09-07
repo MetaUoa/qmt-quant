@@ -9,6 +9,8 @@ import pandas as pd
 from .backtest_execution import (
     TradabilityGuard,
     affordable_buy_quantity,
+    apply_buy_position_mutation,
+    apply_sell_position_mutation,
     build_rebalance_order_plan,
     deterministic_fill,
     equal_weight_target_shares,
@@ -334,10 +336,12 @@ def run_backtest(
                     stamp_tax_rate=_stamp_tax_rate(ts),
                 )
                 cash = sell_settlement.ending_cash
-                positions[code] = sell_settlement.ending_shares
-                if positions[code] <= 0:
-                    del positions[code]
-                    last_buy_date.pop(code, None)
+                apply_sell_position_mutation(
+                    positions=positions,
+                    last_buy_date=last_buy_date,
+                    code=code,
+                    ending_shares=sell_settlement.ending_shares,
+                )
                 trade_rows.append(
                     {
                         "date": ts,
@@ -378,8 +382,13 @@ def run_backtest(
                     cost=cost,
                 )
                 cash = buy_settlement.ending_cash
-                positions[code] = buy_settlement.ending_shares
-                last_buy_date[code] = pd.Timestamp(ts).normalize()
+                apply_buy_position_mutation(
+                    positions=positions,
+                    last_buy_date=last_buy_date,
+                    code=code,
+                    ending_shares=buy_settlement.ending_shares,
+                    execution_date=ts,
+                )
                 trade_rows.append(
                     {
                         "date": ts,
