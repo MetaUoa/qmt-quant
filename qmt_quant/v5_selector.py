@@ -65,7 +65,11 @@ def select_training_composite(
         observations,
         start=start,
         end=end,
+        min_dates=DEFAULT_V5_SELECTION_POLICY.min_orientation_dates,
         min_abs_rank_ic=min_abs_rank_ic,
+        require_same_sign_across_horizons=(
+            DEFAULT_V5_SELECTION_POLICY.require_same_sign_across_horizons
+        ),
     )
     allowed = set(allowed_factors)
     learned = learned.loc[
