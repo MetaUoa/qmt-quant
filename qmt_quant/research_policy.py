@@ -39,6 +39,8 @@ class V5SelectionPolicy:
     )
     correlation_horizon: int = 20
     min_abs_rank_ic: float = 0.01
+    min_orientation_dates: int = 24
+    require_same_sign_across_horizons: bool = True
     max_abs_correlation: float = 0.80
     min_factors: int = 2
     max_factors: int = 4
