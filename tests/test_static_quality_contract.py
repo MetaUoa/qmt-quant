@@ -25,6 +25,8 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
         "qmt_quant/research_policy.py",
         "qmt_quant/research_contracts.py",
         "qmt_quant/research_runtime.py",
+        "qmt_quant/factor_selection.py",
+        "qmt_quant/v5_selector.py",
         "risk/runtime.py",
         "monitoring/alerts.py",
     ):
