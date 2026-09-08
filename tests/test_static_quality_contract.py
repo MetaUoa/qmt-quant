@@ -13,6 +13,7 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
         "qmt_quant/production_candidate.py",
         "qmt_quant/v5_gates.py",
         "qmt_quant/adjustment_provenance.py",
+        "qmt_quant/backtest.py",
         "qmt_quant/backtest_execution.py",
         "qmt_quant/backtest_reporting.py",
         "qmt_quant/backtest_selection.py",
