@@ -3,6 +3,10 @@ from __future__ import annotations
 from inspect import signature
 from pathlib import Path
 
+import pandas as pd
+import pytest
+
+import qmt_quant.v5_selector as selector_module
 from qmt_quant.research_policy import DEFAULT_V5_SELECTION_POLICY, V5SelectionPolicy
 from qmt_quant.v5_selector import DEFAULT_SAFE_FACTORS, select_training_composite
 from qmt_quant.workflow_contract import load_workflow, normalized_run
@@ -27,6 +31,8 @@ def test_v5_selection_policy_preserves_existing_historical_defaults() -> None:
     )
     assert policy.correlation_horizon == 20
     assert policy.min_abs_rank_ic == 0.01
+    assert policy.min_orientation_dates == 24
+    assert policy.require_same_sign_across_horizons is True
     assert policy.max_abs_correlation == 0.80
     assert policy.min_factors == 2
     assert policy.max_factors == 4
@@ -44,6 +50,29 @@ def test_selector_signature_sources_all_defaults_from_frozen_policy() -> None:
     assert params["min_factors"].default == policy.min_factors
     assert params["max_factors"].default == policy.max_factors
     assert params["weight_metric_cap"].default == policy.weight_metric_cap
+
+
+def test_selector_passes_frozen_orientation_policy_to_training_gate(monkeypatch) -> None:
+    class Probe(Exception):
+        pass
+
+    policy = DEFAULT_V5_SELECTION_POLICY
+
+    def probe(*args, **kwargs):
+        assert kwargs["min_dates"] == policy.min_orientation_dates
+        assert (
+            kwargs["require_same_sign_across_horizons"]
+            is policy.require_same_sign_across_horizons
+        )
+        raise Probe
+
+    monkeypatch.setattr(selector_module, "learn_factor_orientations", probe)
+    with pytest.raises(Probe):
+        selector_module.select_training_composite(
+            pd.DataFrame(),
+            train_start="2020-01-01",
+            train_end="2020-12-31",
+        )
 
 
 def test_v5_selector_is_in_targeted_mypy_gate() -> None:
