@@ -41,6 +41,8 @@ class V5SelectionPolicy:
     min_abs_rank_ic: float = 0.01
     min_orientation_dates: int = 24
     require_same_sign_across_horizons: bool = True
+    duplicate_value_columns: tuple[str, ...] = ("rank_ic", "top_bottom_spread")
+    duplicate_atol: float = 1e-12
     max_abs_correlation: float = 0.80
     min_factors: int = 2
     max_factors: int = 4
