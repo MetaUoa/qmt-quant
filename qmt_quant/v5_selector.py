@@ -78,7 +78,13 @@ def select_training_composite(
     if learned.empty:
         raise RuntimeError("no safe factor cleared the training orientation gate")
 
-    duplicates = duplicate_observation_groups(observations, start=start, end=end)
+    duplicates = duplicate_observation_groups(
+        observations,
+        start=start,
+        end=end,
+        value_columns=DEFAULT_V5_SELECTION_POLICY.duplicate_value_columns,
+        atol=DEFAULT_V5_SELECTION_POLICY.duplicate_atol,
+    )
     duplicate_drop: set[str] = set()
     for group in duplicates:
         eligible = sorted(set(group).intersection(allowed))
