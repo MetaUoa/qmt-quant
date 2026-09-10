@@ -7,6 +7,7 @@ import sys
 import pandas as pd
 
 import run_v5_c_nested_research as c1
+from qmt_quant.nested_walk_forward import PurgedNestedFold
 from qmt_quant.neutralization_diagnostics import (
     aggregate_variant_quality,
     summarize_neutralization_variants,
@@ -21,7 +22,21 @@ from qmt_quant.research_runtime import install_v5_c_contracts
 
 _MAX_RESEARCH_END = "20251231"
 _OriginalVariantObservations = c1._variant_observations
+_OriginalPurgeNestedFold = c1.purge_nested_fold
 _CAPTURED: list[pd.DataFrame] = []
+_CAPTURED_FOLDS: list[PurgedNestedFold] = []
+_FORBIDDEN_C1_OUTPUTS = (
+    "candidate_manifest.json",
+    "basic_alpha_gate.json",
+    "research_manifest.json",
+    "nested_choices.json",
+    "nested_metrics.json",
+    "nested_outer_folds.csv",
+)
+
+
+class _C9DiagnosticsReady(Exception):
+    """Internal sentinel: all C9 diagnostic inputs are captured; stop C1 immediately."""
 
 
 def _arg_value(argv: list[str], name: str) -> str | None:
@@ -64,6 +79,12 @@ def _assert_data_policy(argv: list[str]) -> None:
     )
 
 
+def _capture_purged_fold(*args, **kwargs) -> PurgedNestedFold:
+    purged = _OriginalPurgeNestedFold(*args, **kwargs)
+    _CAPTURED_FOLDS.append(purged)
+    return purged
+
+
 def _capture_variant_observations(*args, **kwargs) -> pd.DataFrame:
     frame = _OriginalVariantObservations(*args, **kwargs)
     index = len(_CAPTURED)
@@ -72,6 +93,8 @@ def _capture_variant_observations(*args, **kwargs) -> pd.DataFrame:
     tagged = frame.copy()
     tagged.insert(0, "variant", c1.VARIANTS[index])
     _CAPTURED.append(tagged)
+    if len(_CAPTURED) == len(c1.VARIANTS):
+        raise _C9DiagnosticsReady
     return frame
 
 
@@ -80,28 +103,38 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
         raise RuntimeError(
             f"C9 expected exactly {len(c1.VARIANTS)} captured variants, found {len(_CAPTURED)}"
         )
-    choices_path = output / "nested_choices.json"
-    if not choices_path.exists():
-        raise RuntimeError("C9 requires nested_choices.json from the strict C1 nested run")
-    choices = json.loads(choices_path.read_text(encoding="utf-8"))
-    observations = pd.concat(_CAPTURED, ignore_index=True)
+    expected_folds = len(c1.nested_annual_folds(2021, 2025, outer_train_years=4, inner_validation_years=1))
+    if len(_CAPTURED_FOLDS) != expected_folds:
+        raise RuntimeError(
+            f"C9 expected exactly {expected_folds} purged folds, found {len(_CAPTURED_FOLDS)}"
+        )
 
+    observations = pd.concat(_CAPTURED, ignore_index=True)
     factor_rows: list[pd.DataFrame] = []
     quality_rows: list[pd.DataFrame] = []
     windows: list[dict] = []
-    for row in choices:
-        year = int(row["outer_validation_year"])
-        first_inner = row["inner"][c1.VARIANTS[0]]["selection"]
-        outer = row["outer_selection"]
-        for phase, selection in (("inner", first_inner), ("outer", outer)):
-            start = str(selection["train_start"])
-            end = str(selection["train_end"])
-            if pd.Timestamp(end) >= pd.Timestamp("2026-01-01"):
+    for purged in _CAPTURED_FOLDS:
+        year = int(purged.fold.outer_validation_year)
+        for phase, start, end in (
+            (
+                "inner",
+                purged.fold.inner_train_start,
+                purged.inner_evidence_end,
+            ),
+            (
+                "outer",
+                purged.fold.outer_train_start,
+                purged.outer_evidence_end,
+            ),
+        ):
+            start_text = str(pd.Timestamp(start).date())
+            end_text = str(pd.Timestamp(end).date())
+            if pd.Timestamp(end_text) >= pd.Timestamp("2026-01-01"):
                 raise RuntimeError("C9 diagnostic window crossed into 2026")
             summary = summarize_neutralization_variants(
                 observations,
-                start=start,
-                end=end,
+                start=start_text,
+                end=end_text,
             )
             summary.insert(0, "validation_year", year)
             summary.insert(1, "phase", phase)
@@ -117,8 +150,8 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
                 {
                     "validation_year": year,
                     "phase": phase,
-                    "train_start": start,
-                    "train_end": end,
+                    "train_start": start_text,
+                    "train_end": end_text,
                 }
             )
 
@@ -138,14 +171,17 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
     payload = {
         "method": "fold_safe_neutralization_diagnostics_only",
         "selection_changed": False,
+        "winner_selection_executed": False,
         "candidate_changed": False,
+        "candidate_manifest_written": False,
+        "basic_alpha_gate_evaluated": False,
         "holdout_unlocked": False,
         "pre_2026_only": True,
         "canonical_c1_contracts": True,
         "core_factors_only": list(c1.CORE_ALPHA_FACTORS),
         "variants": list(c1.VARIANTS),
         "captured_variant_count": len(_CAPTURED),
-        "fold_count": len(choices),
+        "fold_count": len(_CAPTURED_FOLDS),
         "windows": windows,
     }
     (output / "c9_diagnostics_manifest.json").write_text(
@@ -154,17 +190,48 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
     return payload
 
 
+def _remove_forbidden_stale_outputs(output: Path) -> None:
+    for name in _FORBIDDEN_C1_OUTPUTS:
+        path = output / name
+        if path.exists():
+            path.unlink()
+
+
+def _assert_no_forbidden_c1_outputs(output: Path) -> None:
+    leaked = [name for name in _FORBIDDEN_C1_OUTPUTS if (output / name).exists()]
+    if leaked:
+        raise RuntimeError(f"C9 produced forbidden C1 selection outputs: {', '.join(leaked)}")
+
+
 def main() -> int:
     argv = sys.argv[1:]
     _assert_pre_2026_only(argv)
     _assert_data_policy(argv)
-    _CAPTURED.clear()
-    install_v5_c_contracts(c1)
-    c1._variant_observations = _capture_variant_observations
-    rc = c1.main()
     output = Path(_arg_value(argv, "--output") or "output/v5_c_nested")
+    output.mkdir(parents=True, exist_ok=True)
+    _remove_forbidden_stale_outputs(output)
+    _CAPTURED.clear()
+    _CAPTURED_FOLDS.clear()
+    install_v5_c_contracts(c1)
+
+    previous_variant_observations = c1._variant_observations
+    previous_purge_nested_fold = c1.purge_nested_fold
+    c1._variant_observations = _capture_variant_observations
+    c1.purge_nested_fold = _capture_purged_fold
+    try:
+        try:
+            c1.main()
+        except _C9DiagnosticsReady:
+            pass
+        else:
+            raise RuntimeError("C9 reached the C1 selection path before diagnostics capture stopped it")
+    finally:
+        c1._variant_observations = previous_variant_observations
+        c1.purge_nested_fold = previous_purge_nested_fold
+
     _build_fold_safe_diagnostics(output)
-    return rc
+    _assert_no_forbidden_c1_outputs(output)
+    return 0
 
 
 if __name__ == "__main__":
