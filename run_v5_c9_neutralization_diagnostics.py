@@ -23,6 +23,13 @@ from qmt_quant.research_runtime import install_v5_c_contracts
 _MAX_RESEARCH_END = "20251231"
 _OriginalVariantObservations = c1._variant_observations
 _OriginalPurgeNestedFold = c1.purge_nested_fold
+_C1_CONTRACT_HOOK_NAMES = (
+    "_coverage_or_fail",
+    "_eligible_mask",
+    "_assert_strict_metrics",
+    "_stitch_fold_equity",
+    "_basic_alpha_gate",
+)
 _CAPTURED: list[pd.DataFrame] = []
 _CAPTURED_FOLDS: list[PurgedNestedFold] = []
 _FORBIDDEN_C1_OUTPUTS = (
@@ -103,7 +110,14 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
         raise RuntimeError(
             f"C9 expected exactly {len(c1.VARIANTS)} captured variants, found {len(_CAPTURED)}"
         )
-    expected_folds = len(c1.nested_annual_folds(2021, 2025, outer_train_years=4, inner_validation_years=1))
+    expected_folds = len(
+        c1.nested_annual_folds(
+            2021,
+            2025,
+            outer_train_years=4,
+            inner_validation_years=1,
+        )
+    )
     if len(_CAPTURED_FOLDS) != expected_folds:
         raise RuntimeError(
             f"C9 expected exactly {expected_folds} purged folds, found {len(_CAPTURED_FOLDS)}"
@@ -185,7 +199,8 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
         "windows": windows,
     }
     (output / "c9_diagnostics_manifest.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
     return payload
 
@@ -212,10 +227,14 @@ def main() -> int:
     _remove_forbidden_stale_outputs(output)
     _CAPTURED.clear()
     _CAPTURED_FOLDS.clear()
-    install_v5_c_contracts(c1)
 
     previous_variant_observations = c1._variant_observations
     previous_purge_nested_fold = c1.purge_nested_fold
+    previous_contract_hooks = {
+        name: getattr(c1, name)
+        for name in _C1_CONTRACT_HOOK_NAMES
+    }
+    install_v5_c_contracts(c1)
     c1._variant_observations = _capture_variant_observations
     c1.purge_nested_fold = _capture_purged_fold
     try:
@@ -224,10 +243,14 @@ def main() -> int:
         except _C9DiagnosticsReady:
             pass
         else:
-            raise RuntimeError("C9 reached the C1 selection path before diagnostics capture stopped it")
+            raise RuntimeError(
+                "C9 reached the C1 selection path before diagnostics capture stopped it"
+            )
     finally:
         c1._variant_observations = previous_variant_observations
         c1.purge_nested_fold = previous_purge_nested_fold
+        for name, value in previous_contract_hooks.items():
+            setattr(c1, name, value)
 
     _build_fold_safe_diagnostics(output)
     _assert_no_forbidden_c1_outputs(output)
