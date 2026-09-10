@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+import importlib
 import json
 from pathlib import Path
 import sys
+from typing import Any, Protocol, cast
 
 import pandas as pd
 
-import run_v5_c_nested_research as c1
 from qmt_quant.nested_walk_forward import PurgedNestedFold
 from qmt_quant.neutralization_diagnostics import (
     aggregate_variant_quality,
@@ -19,6 +21,18 @@ from qmt_quant.research_policy import (
 )
 from qmt_quant.research_runtime import install_v5_c_contracts
 
+
+class _C1Surface(Protocol):
+    VARIANTS: tuple[str, ...]
+    CORE_ALPHA_FACTORS: tuple[str, ...]
+    _variant_observations: Callable[..., pd.DataFrame]
+    purge_nested_fold: Callable[..., PurgedNestedFold]
+    nested_annual_folds: Callable[..., list[Any]]
+    main: Callable[[], int]
+
+
+_c1_module = importlib.import_module("run_v5_c_nested_research")
+c1 = cast(_C1Surface, _c1_module)
 
 _MAX_RESEARCH_END = "20251231"
 _OriginalVariantObservations = c1._variant_observations
@@ -105,7 +119,7 @@ def _capture_variant_observations(*args, **kwargs) -> pd.DataFrame:
     return frame
 
 
-def _build_fold_safe_diagnostics(output: Path) -> dict:
+def _build_fold_safe_diagnostics(output: Path) -> dict[str, Any]:
     if len(_CAPTURED) != len(c1.VARIANTS):
         raise RuntimeError(
             f"C9 expected exactly {len(c1.VARIANTS)} captured variants, found {len(_CAPTURED)}"
@@ -126,7 +140,7 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
     observations = pd.concat(_CAPTURED, ignore_index=True)
     factor_rows: list[pd.DataFrame] = []
     quality_rows: list[pd.DataFrame] = []
-    windows: list[dict] = []
+    windows: list[dict[str, Any]] = []
     for purged in _CAPTURED_FOLDS:
         year = int(purged.fold.outer_validation_year)
         for phase, start, end in (
@@ -182,7 +196,7 @@ def _build_fold_safe_diagnostics(output: Path) -> dict:
         encoding="utf-8-sig",
     )
 
-    payload = {
+    payload: dict[str, Any] = {
         "method": "fold_safe_neutralization_diagnostics_only",
         "selection_changed": False,
         "winner_selection_executed": False,
@@ -231,10 +245,10 @@ def main() -> int:
     previous_variant_observations = c1._variant_observations
     previous_purge_nested_fold = c1.purge_nested_fold
     previous_contract_hooks = {
-        name: getattr(c1, name)
+        name: getattr(_c1_module, name)
         for name in _C1_CONTRACT_HOOK_NAMES
     }
-    install_v5_c_contracts(c1)
+    install_v5_c_contracts(_c1_module)
     c1._variant_observations = _capture_variant_observations
     c1.purge_nested_fold = _capture_purged_fold
     try:
@@ -250,7 +264,7 @@ def main() -> int:
         c1._variant_observations = previous_variant_observations
         c1.purge_nested_fold = previous_purge_nested_fold
         for name, value in previous_contract_hooks.items():
-            setattr(c1, name, value)
+            setattr(_c1_module, name, value)
 
     _build_fold_safe_diagnostics(output)
     _assert_no_forbidden_c1_outputs(output)
