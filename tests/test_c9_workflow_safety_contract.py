@@ -56,7 +56,20 @@ def test_c9_runner_keeps_strict_historical_thresholds_and_no_promotion_action() 
     assert "--min-exposure-coverage 0.95" in command
     assert "--min-symbols-per-date 50" in command
 
+    print_command = normalized_run(
+        workflow,
+        "diagnostics",
+        "Print diagnostics manifest only",
+    )
+    assert "c9_diagnostics_manifest.json" in print_command
+
     text = structured_text(workflow).lower()
-    assert "production_candidate" not in text
-    assert "unlock" not in text
-    assert "acceptance" not in text
+    for forbidden in (
+        "production_candidate",
+        "candidate_manifest",
+        "basic_alpha_gate",
+        "research_manifest",
+        "unlock",
+        "acceptance",
+    ):
+        assert forbidden not in text

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pandas as pd
 import pytest
@@ -33,7 +34,11 @@ def test_c9_workflow_is_manual_only_and_pinned_to_authoritative_history() -> Non
     assert env_value(workflow, "EXPOSURE_RUN_ID") == "33963211771"
     assert env_value(workflow, "INDUSTRY_RUN_ID") == "33969253365"
     assert env_value(workflow, "QMT_QUANT_CACHE_ONLY") == "1"
-    audit = normalized_run(workflow, "diagnostics", "Revalidate full historical data before C9 diagnostics")
+    audit = normalized_run(
+        workflow,
+        "diagnostics",
+        "Revalidate full historical data before C9 diagnostics",
+    )
     runner = normalized_run(
         workflow,
         "diagnostics",
@@ -45,9 +50,19 @@ def test_c9_workflow_is_manual_only_and_pinned_to_authoritative_history() -> Non
     assert "--min-exposure-coverage 0.95" in runner
 
 
-def test_c9_fold_safe_diagnostics_do_not_change_selection(tmp_path: Path) -> None:
+def _capture_sample_observations() -> None:
     c9._CAPTURED.clear()
-    dates = pd.to_datetime(["2018-01-02", "2019-01-02", "2020-01-02"])
+    dates = pd.to_datetime(
+        [
+            "2018-01-02",
+            "2019-01-02",
+            "2020-01-02",
+            "2021-01-04",
+            "2022-01-04",
+            "2023-01-03",
+            "2024-01-02",
+        ]
+    )
     for variant in c9.c1.VARIANTS:
         rows = []
         for factor in c9.c1.CORE_ALPHA_FACTORS:
@@ -62,40 +77,105 @@ def test_c9_fold_safe_diagnostics_do_not_change_selection(tmp_path: Path) -> Non
                 )
         c9._CAPTURED.append(pd.DataFrame(rows))
 
-    choices = [
-        {
-            "outer_validation_year": 2021,
-            "inner": {
-                variant: {
-                    "selection": {
-                        "train_start": "2018-01-01",
-                        "train_end": "2019-12-31",
-                    }
-                }
-                for variant in c9.c1.VARIANTS
-            },
-            "outer_selection": {
-                "train_start": "2018-01-01",
-                "train_end": "2020-12-31",
-            },
-        }
-    ]
-    (tmp_path / "nested_choices.json").write_text(
-        __import__("json").dumps(choices), encoding="utf-8"
+
+def _capture_sample_purged_folds() -> None:
+    c9._CAPTURED_FOLDS.clear()
+    calendar = pd.bdate_range("2017-01-02", "2025-12-31")
+    folds = c9.c1.nested_annual_folds(
+        2021,
+        2025,
+        outer_train_years=4,
+        inner_validation_years=1,
     )
+    c9._CAPTURED_FOLDS.extend(
+        c9.c1.purge_nested_fold(fold, calendar, max_forward_horizon=20)
+        for fold in folds
+    )
+
+
+def test_c9_fold_safe_diagnostics_do_not_change_selection(tmp_path: Path) -> None:
+    _capture_sample_observations()
+    _capture_sample_purged_folds()
 
     manifest = c9._build_fold_safe_diagnostics(tmp_path)
     assert manifest["selection_changed"] is False
+    assert manifest["winner_selection_executed"] is False
     assert manifest["candidate_changed"] is False
+    assert manifest["candidate_manifest_written"] is False
+    assert manifest["basic_alpha_gate_evaluated"] is False
     assert manifest["holdout_unlocked"] is False
     assert manifest["pre_2026_only"] is True
     assert manifest["canonical_c1_contracts"] is True
     assert manifest["core_factors_only"] == list(c9.c1.CORE_ALPHA_FACTORS)
+    assert manifest["fold_count"] == 5
+    assert len(manifest["windows"]) == 10
     assert (tmp_path / "c9_neutralization_factor_summary.csv").exists()
     assert (tmp_path / "c9_neutralization_variant_quality.csv").exists()
+    assert not (tmp_path / "candidate_manifest.json").exists()
+    assert not (tmp_path / "basic_alpha_gate.json").exists()
+    assert not (tmp_path / "research_manifest.json").exists()
 
 
-def test_c9_entrypoint_installs_canonical_c1_contracts() -> None:
-    text = Path("run_v5_c9_neutralization_diagnostics.py").read_text(encoding="utf-8")
-    assert "install_v5_c_contracts(c1)" in text
-    assert "202601" not in text
+def test_c9_main_stops_immediately_after_fourth_variant_capture(monkeypatch, tmp_path: Path) -> None:
+    previous_variant_observations = c9.c1._variant_observations
+    previous_purge_nested_fold = c9.c1.purge_nested_fold
+    previous_contract_hooks = {
+        name: getattr(c9.c1, name)
+        for name in c9._C1_CONTRACT_HOOK_NAMES
+    }
+    winner_reached = False
+    diagnostics_built = False
+    installed_marker = object()
+
+    def fake_variant_observations(*args, **kwargs) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "factor": [c9.c1.CORE_ALPHA_FACTORS[0]],
+                "horizon": [20],
+                "date": [pd.Timestamp("2020-01-02")],
+                "rank_ic": [0.01],
+            }
+        )
+
+    def fake_install(module) -> None:
+        for name in c9._C1_CONTRACT_HOOK_NAMES:
+            setattr(module, name, installed_marker)
+
+    def fake_c1_main() -> int:
+        nonlocal winner_reached
+        for _ in c9.c1.VARIANTS:
+            c9.c1._variant_observations(None, None, None, min_symbols=50)
+        winner_reached = True
+        return 0
+
+    def fake_build(output: Path) -> dict:
+        nonlocal diagnostics_built
+        diagnostics_built = True
+        assert output == tmp_path
+        assert len(c9._CAPTURED) == len(c9.c1.VARIANTS)
+        return {"winner_selection_executed": False}
+
+    monkeypatch.setattr(c9, "_OriginalVariantObservations", fake_variant_observations)
+    monkeypatch.setattr(c9, "install_v5_c_contracts", fake_install)
+    monkeypatch.setattr(c9.c1, "main", fake_c1_main)
+    monkeypatch.setattr(c9, "_build_fold_safe_diagnostics", fake_build)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_v5_c9_neutralization_diagnostics.py", "--output", str(tmp_path)],
+    )
+
+    assert c9.main() == 0
+    assert winner_reached is False
+    assert diagnostics_built is True
+    assert c9.c1._variant_observations is previous_variant_observations
+    assert c9.c1.purge_nested_fold is previous_purge_nested_fold
+    for name, value in previous_contract_hooks.items():
+        assert getattr(c9.c1, name) is value
+
+
+def test_c9_removes_stale_selection_outputs_before_diagnostics(tmp_path: Path) -> None:
+    for name in c9._FORBIDDEN_C1_OUTPUTS:
+        (tmp_path / name).write_text("stale", encoding="utf-8")
+    c9._remove_forbidden_stale_outputs(tmp_path)
+    assert all(not (tmp_path / name).exists() for name in c9._FORBIDDEN_C1_OUTPUTS)
