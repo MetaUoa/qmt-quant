@@ -29,7 +29,9 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
         "qmt_quant/factor_selection.py",
         "qmt_quant/factor_orthogonality.py",
         "qmt_quant/composites.py",
+        "qmt_quant/neutralization_diagnostics.py",
         "qmt_quant/v5_selector.py",
+        "run_v5_c9_neutralization_diagnostics.py",
         "risk/runtime.py",
         "monitoring/alerts.py",
     ):
