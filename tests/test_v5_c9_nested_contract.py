@@ -119,8 +119,13 @@ def test_c9_fold_safe_diagnostics_do_not_change_selection(tmp_path: Path) -> Non
 def test_c9_main_stops_immediately_after_fourth_variant_capture(monkeypatch, tmp_path: Path) -> None:
     previous_variant_observations = c9.c1._variant_observations
     previous_purge_nested_fold = c9.c1.purge_nested_fold
+    previous_contract_hooks = {
+        name: getattr(c9.c1, name)
+        for name in c9._C1_CONTRACT_HOOK_NAMES
+    }
     winner_reached = False
     diagnostics_built = False
+    installed_marker = object()
 
     def fake_variant_observations(*args, **kwargs) -> pd.DataFrame:
         return pd.DataFrame(
@@ -131,6 +136,10 @@ def test_c9_main_stops_immediately_after_fourth_variant_capture(monkeypatch, tmp
                 "rank_ic": [0.01],
             }
         )
+
+    def fake_install(module) -> None:
+        for name in c9._C1_CONTRACT_HOOK_NAMES:
+            setattr(module, name, installed_marker)
 
     def fake_c1_main() -> int:
         nonlocal winner_reached
@@ -147,16 +156,22 @@ def test_c9_main_stops_immediately_after_fourth_variant_capture(monkeypatch, tmp
         return {"winner_selection_executed": False}
 
     monkeypatch.setattr(c9, "_OriginalVariantObservations", fake_variant_observations)
-    monkeypatch.setattr(c9, "install_v5_c_contracts", lambda module: None)
+    monkeypatch.setattr(c9, "install_v5_c_contracts", fake_install)
     monkeypatch.setattr(c9.c1, "main", fake_c1_main)
     monkeypatch.setattr(c9, "_build_fold_safe_diagnostics", fake_build)
-    monkeypatch.setattr(sys, "argv", ["run_v5_c9_neutralization_diagnostics.py", "--output", str(tmp_path)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_v5_c9_neutralization_diagnostics.py", "--output", str(tmp_path)],
+    )
 
     assert c9.main() == 0
     assert winner_reached is False
     assert diagnostics_built is True
     assert c9.c1._variant_observations is previous_variant_observations
     assert c9.c1.purge_nested_fold is previous_purge_nested_fold
+    for name, value in previous_contract_hooks.items():
+        assert getattr(c9.c1, name) is value
 
 
 def test_c9_removes_stale_selection_outputs_before_diagnostics(tmp_path: Path) -> None:
