@@ -11,6 +11,7 @@ import qmt_quant.live_safety as live_safety
 
 
 SHA = "a" * 64
+EVIDENCE_SHA = "c" * 64
 
 
 def _write_targets(
@@ -36,6 +37,20 @@ def _write_targets(
         payload["strategy_source"] = {"kind": "legacy_strategy_config", "sha256": SHA}
     diagnostics.write_text(json.dumps(payload), encoding="utf-8")
     return targets, diagnostics
+
+
+def _acceptance_payload(*, grade="B", strategy_sha=SHA):
+    return {
+        "schema": "qmt-acceptance-v2",
+        "grade": grade,
+        "strategy_sha256": strategy_sha,
+        "evidence_sha256": {
+            "backtest": EVIDENCE_SHA,
+            "walk_forward": EVIDENCE_SHA,
+            "folds": EVIDENCE_SHA,
+            "stress": EVIDENCE_SHA,
+        },
+    }
 
 
 def test_live_targets_must_match_current_china_market_date(tmp_path, monkeypatch):
@@ -78,13 +93,32 @@ def test_valid_live_target_bundle_returns_exact_sha_and_file_digest(tmp_path, mo
 
 def test_acceptance_must_bind_exact_strategy_sha(tmp_path):
     acceptance = tmp_path / "acceptance.json"
-    acceptance.write_text(json.dumps({"grade": "A", "strategy_sha256": "b" * 64}), encoding="utf-8")
+    acceptance.write_text(
+        json.dumps(_acceptance_payload(grade="A", strategy_sha="b" * 64)),
+        encoding="utf-8",
+    )
     with pytest.raises(RuntimeError, match="exact target strategy SHA256"):
         live_safety.validate_acceptance_for_strategy(acceptance, "C", SHA)
 
 
-def test_acceptance_matching_strategy_sha_passes(tmp_path):
+def test_live_acceptance_rejects_unhashed_legacy_report(tmp_path):
     acceptance = tmp_path / "acceptance.json"
-    acceptance.write_text(json.dumps({"grade": "B", "strategy_sha256": SHA}), encoding="utf-8")
+    acceptance.write_text(json.dumps({"grade": "A", "strategy_sha256": SHA}), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="schema qmt-acceptance-v2"):
+        live_safety.validate_acceptance_for_strategy(acceptance, "C", SHA)
+
+
+def test_live_acceptance_requires_all_evidence_hashes(tmp_path):
+    payload = _acceptance_payload()
+    del payload["evidence_sha256"]["stress"]
+    acceptance = tmp_path / "acceptance.json"
+    acceptance.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="stress"):
+        live_safety.validate_acceptance_for_strategy(acceptance, "C", SHA)
+
+
+def test_acceptance_matching_strategy_sha_and_evidence_hashes_passes(tmp_path):
+    acceptance = tmp_path / "acceptance.json"
+    acceptance.write_text(json.dumps(_acceptance_payload()), encoding="utf-8")
     report = live_safety.validate_acceptance_for_strategy(acceptance, "C", SHA)
     assert report["grade"] == "B"
