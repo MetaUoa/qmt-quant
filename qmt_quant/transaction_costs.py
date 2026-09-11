@@ -165,6 +165,26 @@ def _strict_int(value: object, *, name: str) -> int:
     raise ValueError(f"{name} must be an integer")
 
 
+def _strict_float(value: object, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be numeric")
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError(f"{name} must be numeric")
+        try:
+            number = float(text)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be numeric") from exc
+    else:
+        raise ValueError(f"{name} must be numeric")
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
 def reconcile_phase_cash(
     *,
     side: str,
@@ -208,8 +228,8 @@ def reconcile_phase_cash(
         if order_id not in submitted:
             continue
         volume = _strict_int(row.get("traded_volume"), name=f"trade.traded_volume:{order_id}")
-        price = float(row.get("traded_price", 0.0) or 0.0)
-        if volume <= 0 or not math.isfinite(price) or price <= 0:
+        price = _strict_float(row.get("traded_price", 0.0), name=f"trade.traded_price:{order_id}")
+        if volume <= 0 or price <= 0:
             raise ValueError(f"trade {order_id} has invalid volume or price")
         trade_volume_by_order[order_id] += volume
         trade_notional_by_order[order_id] += volume * price
