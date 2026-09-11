@@ -7,6 +7,7 @@ from typing import Mapping, Sequence
 from .backtest_execution import commission
 from .config import CostConfig
 from .live_trader import OrderInstruction, PositionSnapshot
+from .transaction_costs import AshareFeeSchedule, fee_breakdown
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,7 @@ def estimate_buy_cash_reserve(
     plan: Sequence[OrderInstruction],
     *,
     cost: CostConfig,
+    fee_schedule: AshareFeeSchedule | None = None,
 ) -> dict:
     rows: list[dict[str, object]] = []
     total = 0.0
@@ -191,8 +193,15 @@ def estimate_buy_cash_reserve(
         if item.side != "BUY":
             continue
         notional = float(item.shares) * float(item.reference_price)
-        fee = commission(cost, notional)
-        reserve = notional + fee
+        if fee_schedule is None:
+            fee = commission(cost, notional)
+            reserve = notional + fee
+            fee_payload: dict[str, object] = {"commission": float(fee)}
+        else:
+            breakdown = fee_breakdown(side="BUY", notional=notional, schedule=fee_schedule)
+            fee = float(breakdown.broker_commission)
+            reserve = notional + float(breakdown.total_cash_fee)
+            fee_payload = asdict(breakdown)
         total += reserve
         rows.append(
             {
@@ -201,11 +210,15 @@ def estimate_buy_cash_reserve(
                 "reference_price": float(item.reference_price),
                 "notional": float(notional),
                 "commission": float(fee),
+                "fees": fee_payload,
                 "reserve": float(reserve),
             }
         )
-    return {
+    payload = {
         "estimated_buy_cash_required": float(total),
         "orders": rows,
         "cost": asdict(cost),
     }
+    if fee_schedule is not None:
+        payload["ashare_fee_schedule"] = asdict(fee_schedule)
+    return payload

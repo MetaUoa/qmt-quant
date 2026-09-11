@@ -40,6 +40,9 @@ jobs:
           qmt_quant/acceptance_lineage.py
           qmt_quant/live_safety.py
           qmt_quant/live_trader.py
+          qmt_quant/broker_events.py
+          qmt_quant/freshness.py
+          qmt_quant/transaction_costs.py
           qmt_quant/target_planning.py
           qmt_quant/execution_state.py
           qmt_quant/execution_phases.py

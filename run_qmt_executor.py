@@ -4,11 +4,12 @@ import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
+from typing import Callable, Mapping, TypeVar
 
 import pandas as pd
 
+from qmt_quant.broker_events import JsonlEventJournal
 from qmt_quant.config import CostConfig
 from qmt_quant.execution_phases import (
     estimate_buy_cash_reserve,
@@ -29,14 +30,23 @@ from qmt_quant.execution_state import (
     reserve_execution_batch,
     update_execution_batch,
 )
+from qmt_quant.freshness import (
+    FreshnessPolicy,
+    require_fresh,
+    utc_now,
+    validate_query_window,
+    validate_tick_freshness,
+)
 from qmt_quant.live_safety import validate_acceptance_for_strategy, validate_target_bundle
 from qmt_quant.live_trader import QmtBroker, serialize_plan
 from qmt_quant.target_planning import build_target_weight_plan
+from qmt_quant.transaction_costs import AshareFeeSchedule, reconcile_phase_cash
 from risk.pretrade import validate_pretrade
 from risk.runtime import RuntimeRiskPolicy, evaluate_runtime_risk
 
 
 _DEFAULT_COST = CostConfig()
+_T = TypeVar("_T")
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,6 +79,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--commission-rate", type=float, default=_DEFAULT_COST.commission_rate)
     p.add_argument("--min-commission", type=float, default=_DEFAULT_COST.min_commission)
     p.add_argument("--lot-size", type=int, default=_DEFAULT_COST.lot_size)
+    p.add_argument("--transfer-fee-rate", type=float, default=0.00001)
+    p.add_argument("--stamp-tax-rate", type=float, default=0.0005)
+    p.add_argument("--exchange-handling-rate", type=float, default=0.0000341)
+    p.add_argument("--securities-management-rate", type=float, default=0.00002)
+    p.add_argument(
+        "--commission-excludes-regulatory-fees",
+        action="store_true",
+        help="Add exchange handling and securities-management fees on top of broker commission",
+    )
+    p.add_argument("--cash-reconcile-absolute-tolerance", type=float, default=2.0)
+    p.add_argument("--cash-reconcile-relative-tolerance-bps", type=float, default=0.5)
+    p.add_argument("--quote-max-age-seconds", type=float, default=5.0)
+    p.add_argument("--query-max-duration-seconds", type=float, default=5.0)
+    p.add_argument("--clock-skew-tolerance-seconds", type=float, default=2.0)
     p.add_argument("--buy-buffer-bps", type=float, default=8.0)
     p.add_argument("--sell-buffer-bps", type=float, default=8.0)
     p.add_argument("--output", default="output/live_execution")
@@ -83,40 +107,88 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _append_jsonl_fsync(path: Path, payload: dict) -> None:
+def _write_json(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    record = {"recorded_at_utc": datetime.now(timezone.utc).isoformat(), **payload}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    path.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+def _empty_reconciliation() -> dict[str, object]:
+    return {
+        "orders": [],
+        "trades": [],
+        "missing_order_ids": [],
+        "requires_manual_reconciliation": False,
+    }
 
 
-def _empty_reconciliation() -> dict:
-    return {"orders": [], "missing_order_ids": [], "requires_manual_reconciliation": False}
-
-
-def _reconcile_phase(broker: QmtBroker, results: list[dict]) -> dict:
-    ids = submitted_order_ids(results)
-    reconciliation = (
-        broker.reconcile_order_ids(ids, max_attempts=3, retry_delay_seconds=0.5)
-        if ids
-        else _empty_reconciliation()
+def _timed_query(
+    source: str,
+    fn: Callable[[], _T],
+    *,
+    policy: FreshnessPolicy,
+) -> tuple[_T, dict[str, object]]:
+    started = utc_now()
+    value = fn()
+    completed = utc_now()
+    report = validate_query_window(
+        source=source,
+        started_at=started,
+        completed_at=completed,
+        policy=policy,
+        now=completed,
     )
+    return value, report
+
+
+def _reconcile_phase(
+    broker: QmtBroker,
+    results: list[dict],
+    *,
+    freshness_policy: FreshnessPolicy,
+) -> dict[str, object]:
+    ids = submitted_order_ids(results)
+    if ids:
+        reconciliation, order_freshness = _timed_query(
+            "query_stock_orders:reconciliation",
+            lambda: broker.reconcile_order_ids(ids, max_attempts=3, retry_delay_seconds=0.5),
+            policy=freshness_policy,
+        )
+        trades, trade_freshness = _timed_query(
+            "query_stock_trades:reconciliation",
+            broker.query_trades,
+            policy=freshness_policy,
+        )
+        reconciliation["trades"] = trades
+        reconciliation["freshness"] = {
+            "passed": bool(order_freshness["passed"] and trade_freshness["passed"]),
+            "orders": order_freshness,
+            "trades": trade_freshness,
+        }
+    else:
+        reconciliation = _empty_reconciliation()
+        reconciliation["freshness"] = {"passed": True, "orders": None, "trades": None}
     if has_uncertain_submission(results):
         reconciliation["requires_manual_reconciliation"] = True
         reconciliation["uncertain_submit_exception"] = True
     reconciliation["submitted_order_ids"] = ids
     full_fill = validate_full_fill_reconciliation(results, reconciliation)
     reconciliation["full_fill_check"] = full_fill
-    if not full_fill["passed"]:
+    freshness = reconciliation.get("freshness")
+    if not full_fill["passed"] or not isinstance(freshness, Mapping) or freshness.get("passed") is not True:
         reconciliation["requires_manual_reconciliation"] = True
     return reconciliation
+
+
+def _reconciliation_trades(report: Mapping[str, object]) -> list[dict[str, object]]:
+    value = report.get("trades", [])
+    if not isinstance(value, list):
+        raise ValueError("reconciliation trades must be a list")
+    rows: list[dict[str, object]] = []
+    for row in value:
+        if not isinstance(row, Mapping):
+            raise ValueError("reconciliation trade row must be an object")
+        rows.append(dict(row))
+    return rows
 
 
 def _quantity_deviations(plan, results: list[dict]) -> list[dict]:
@@ -158,6 +230,7 @@ def _block_for_existing_account_lock(
         recovery["observed_orders"] = broker.query_orders(cancelable_only=False)
         recovery["observed_cancelable_orders"] = broker.query_orders(cancelable_only=True)
         recovery["observed_trades"] = broker.query_trades()
+        recovery["broker_health"] = broker.broker_health()
     except Exception as exc:
         recovery["broker_query_error"] = {
             "type": type(exc).__name__,
@@ -188,20 +261,72 @@ def _runtime_report(
     return report
 
 
+def _freshness_payload(
+    *,
+    binding: Mapping[str, object] | None,
+    checks: list[dict[str, object]],
+    broker: QmtBroker,
+) -> dict[str, object]:
+    passed = True
+    for item in checks:
+        report = item.get("report")
+        if not isinstance(report, Mapping) or report.get("passed") is not True:
+            passed = False
+            break
+    return {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "passed": passed,
+        "binding": dict(binding or {}),
+        "broker_health": broker.broker_health(),
+        "checks": checks,
+    }
+
+
 def main() -> int:
     args = parse_args()
-    if args.commission_rate < 0 or args.min_commission < 0:
-        raise ValueError("commission settings must be non-negative")
+    numeric_non_negative = {
+        "commission_rate": args.commission_rate,
+        "min_commission": args.min_commission,
+        "transfer_fee_rate": args.transfer_fee_rate,
+        "stamp_tax_rate": args.stamp_tax_rate,
+        "exchange_handling_rate": args.exchange_handling_rate,
+        "securities_management_rate": args.securities_management_rate,
+        "cash_reconcile_absolute_tolerance": args.cash_reconcile_absolute_tolerance,
+        "cash_reconcile_relative_tolerance_bps": args.cash_reconcile_relative_tolerance_bps,
+        "quote_max_age_seconds": args.quote_max_age_seconds,
+        "query_max_duration_seconds": args.query_max_duration_seconds,
+        "clock_skew_tolerance_seconds": args.clock_skew_tolerance_seconds,
+        "buy_buffer_bps": args.buy_buffer_bps,
+        "sell_buffer_bps": args.sell_buffer_bps,
+    }
+    if any(float(value) < 0 for value in numeric_non_negative.values()):
+        raise ValueError("fee, freshness and execution buffer settings must be non-negative")
     if args.lot_size <= 0:
         raise ValueError("lot size must be positive")
-    if args.buy_buffer_bps < 0 or args.sell_buffer_bps < 0:
-        raise ValueError("execution quote buffers must be non-negative")
 
     cost = CostConfig(
         commission_rate=float(args.commission_rate),
         min_commission=float(args.min_commission),
         lot_size=int(args.lot_size),
     )
+    fee_schedule = AshareFeeSchedule.from_cost_config(
+        cost,
+        transfer_fee_rate=float(args.transfer_fee_rate),
+        stamp_tax_rate=float(args.stamp_tax_rate),
+        exchange_handling_rate=float(args.exchange_handling_rate),
+        securities_management_rate=float(args.securities_management_rate),
+        commission_includes_exchange_and_management=not bool(
+            args.commission_excludes_regulatory_fees
+        ),
+    )
+    fee_schedule.validate()
+    freshness_policy = FreshnessPolicy(
+        quote_max_age_seconds=float(args.quote_max_age_seconds),
+        query_max_duration_seconds=float(args.query_max_duration_seconds),
+        clock_skew_tolerance_seconds=float(args.clock_skew_tolerance_seconds),
+    )
+    freshness_policy.validate()
+
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     state_root = Path(args.state_dir).resolve()
@@ -240,9 +365,30 @@ def main() -> int:
         if existing_lock is not None:
             _block_for_existing_account_lock(broker, lock_payload=existing_lock, output=out)
 
-    total_asset, cash, positions = broker.snapshot()
+    freshness_checks: list[dict[str, object]] = []
+
+    def record_freshness(label: str, report: Mapping[str, object]) -> None:
+        freshness_checks.append({"label": label, "report": dict(report)})
+
+    (total_asset, cash, positions), initial_snapshot_freshness = _timed_query(
+        "account_snapshot:initial",
+        broker.snapshot,
+        policy=freshness_policy,
+    )
+    record_freshness("initial_account_snapshot", initial_snapshot_freshness)
+
     all_codes = list(dict.fromkeys(target_codes + list(positions)))
     ticks = broker.full_tick(all_codes)
+    initial_quote_freshness = validate_tick_freshness(
+        ticks,
+        all_codes,
+        policy=freshness_policy,
+    )
+    record_freshness("initial_quotes", initial_quote_freshness)
+    if args.enable_live:
+        require_fresh(initial_snapshot_freshness, label="initial account snapshot")
+        require_fresh(initial_quote_freshness, label="initial quotes")
+
     executable = broker.executable_prices(
         ticks,
         buy_buffer_bps=float(args.buy_buffer_bps),
@@ -258,7 +404,11 @@ def main() -> int:
         lot_size=cost.lot_size,
     )
     phases = split_order_plan(plan)
-    buy_reserve_estimate = estimate_buy_cash_reserve(phases.buys, cost=cost)
+    buy_reserve_estimate = estimate_buy_cash_reserve(
+        phases.buys,
+        cost=cost,
+        fee_schedule=fee_schedule,
+    )
     batch_id = execution_batch_id(
         signal_date=str(bundle.signal_date),
         strategy_sha256=bundle.strategy_sha256,
@@ -288,6 +438,8 @@ def main() -> int:
         "buy_order_count": len(phases.buys),
         "estimated_buy_cash_required": buy_reserve_estimate["estimated_buy_cash_required"],
         "execution_cost": asdict(cost),
+        "ashare_fee_schedule": asdict(fee_schedule),
+        "freshness_policy": asdict(freshness_policy),
         "buy_buffer_bps": float(args.buy_buffer_bps),
         "sell_buffer_bps": float(args.sell_buffer_bps),
         **binding,
@@ -296,6 +448,10 @@ def main() -> int:
     _write_json(out / "pretrade_snapshot.json", snapshot)
     pd.DataFrame(serialize_plan(plan)).to_csv(out / "order_plan.csv", index=False, encoding="utf-8-sig")
     _write_json(out / "buy_cash_reserve_estimate.json", buy_reserve_estimate)
+    _write_json(
+        out / "freshness_report.json",
+        _freshness_payload(binding=binding, checks=freshness_checks, broker=broker),
+    )
 
     risk_report = validate_pretrade(
         plan,
@@ -351,6 +507,8 @@ def main() -> int:
             "effective_target_weight_sum": float(sum(effective_target_weights.values())),
             "journal_path": str(journal),
             "execution_cost": asdict(cost),
+            "ashare_fee_schedule": asdict(fee_schedule),
+            "freshness_policy": asdict(freshness_policy),
             "buy_buffer_bps": float(args.buy_buffer_bps),
             "sell_buffer_bps": float(args.sell_buffer_bps),
         },
@@ -375,13 +533,14 @@ def main() -> int:
         )
         raise
 
+    journal_writer = JsonlEventJournal(
+        journal,
+        context={"batch_id": batch_id, "account_key": account_key},
+    )
     try:
-        _append_jsonl_fsync(
-            journal,
+        journal_writer.append(
             {
                 "event": "EXECUTION_START",
-                "batch_id": batch_id,
-                "account_key": account_key,
                 "batch_tag": batch_tag,
                 "signal_date": str(bundle.signal_date),
                 "expected_execution_session": str(bundle.expected_execution_session),
@@ -389,7 +548,7 @@ def main() -> int:
                 "planned_order_count": len(plan),
                 "sell_order_count": len(phases.sells),
                 "buy_order_count": len(phases.buys),
-            },
+            }
         )
     except Exception:
         update_execution_batch(batch_marker, status="INCOMPLETE", details={"orders_submitted": 0})
@@ -397,8 +556,18 @@ def main() -> int:
         raise
     _write_json(out / "execution_journal_pointer.json", {"batch_id": batch_id, "journal_path": str(journal)})
 
-    def journal_event(event: dict) -> None:
-        _append_jsonl_fsync(journal, {"batch_id": batch_id, "account_key": account_key, **event})
+    def journal_event(event: dict[str, object]) -> None:
+        journal_writer.append(event)
+
+    def write_freshness() -> dict[str, object]:
+        payload = _freshness_payload(binding=binding, checks=freshness_checks, broker=broker)
+        _write_json(out / "freshness_report.json", payload)
+        return payload
+
+    def capture_freshness(label: str, report: Mapping[str, object]) -> None:
+        record_freshness(label, report)
+        write_freshness()
+        journal_event({"event": "FRESHNESS_CHECK", "label": label, "report": dict(report)})
 
     def manual_stop(stage: str, details: dict) -> int:
         payload = {
@@ -407,6 +576,7 @@ def main() -> int:
             "account_key": account_key,
             "status": "MANUAL_RECONCILIATION",
             "stage": stage,
+            "broker_health": broker.broker_health(),
             **details,
         }
         update_execution_batch(batch_marker, status="MANUAL_RECONCILIATION", details=payload)
@@ -418,7 +588,22 @@ def main() -> int:
             journal_event({"event": "EXECUTION_STOP_MANUAL_RECONCILIATION", **payload})
         except Exception:
             pass
+        try:
+            write_freshness()
+        except Exception:
+            pass
         return 4
+
+    try:
+        broker.attach_event_sink(
+            lambda event: journal_event({"source": "XTQUANT_CALLBACK", **event})
+        )
+        journal_event({"event": "BROKER_EVENT_SINK_ATTACHED", "broker_health": broker.broker_health()})
+    except Exception as exc:
+        return manual_stop(
+            "BROKER_CALLBACK_JOURNAL_ATTACH",
+            {"error_type": type(exc).__name__, "error": str(exc)},
+        )
 
     try:
         update_execution_batch(
@@ -430,14 +615,25 @@ def main() -> int:
             phases.sells,
             on_event=journal_event,
             cost=cost,
+            fee_schedule=fee_schedule,
             batch_tag=batch_tag,
             phase="SELL",
+            freshness_policy=freshness_policy,
+            require_fresh_quotes=True,
+            on_freshness=lambda report: capture_freshness("sell_submission_quotes", report),
         )
         _write_json(out / "sell_phase_results.json", {"orders": sell_results})
         pd.DataFrame(sell_results).to_csv(out / "sell_phase_results.csv", index=False, encoding="utf-8-sig")
-        sell_reconciliation = _reconcile_phase(broker, sell_results)
+        sell_reconciliation = _reconcile_phase(
+            broker,
+            sell_results,
+            freshness_policy=freshness_policy,
+        )
         _write_json(out / "sell_phase_reconciliation.json", sell_reconciliation)
         journal_event({"event": "SELL_RECONCILIATION", **sell_reconciliation})
+        sell_recon_freshness = sell_reconciliation.get("freshness")
+        if isinstance(sell_recon_freshness, Mapping):
+            capture_freshness("sell_reconciliation_queries", sell_recon_freshness)
 
         if sell_reconciliation.get("requires_manual_reconciliation"):
             return manual_stop(
@@ -455,7 +651,15 @@ def main() -> int:
             release_account_execution_lock(account_lock, batch_id=batch_id)
             return 3
 
-        after_sell_asset, after_sell_cash, after_sell_positions = broker.snapshot()
+        (after_sell_asset, after_sell_cash, after_sell_positions), after_sell_snapshot_freshness = _timed_query(
+            "account_snapshot:after_sell",
+            broker.snapshot,
+            policy=freshness_policy,
+        )
+        capture_freshness("after_sell_account_snapshot", after_sell_snapshot_freshness)
+        if after_sell_snapshot_freshness.get("passed") is not True:
+            return manual_stop("AFTER_SELL_SNAPSHOT_FRESHNESS", after_sell_snapshot_freshness)
+
         sell_position_check = validate_sell_position_effect(
             positions,
             sell_results,
@@ -464,6 +668,22 @@ def main() -> int:
         _write_json(out / "sell_phase_position_check.json", sell_position_check)
         if not sell_position_check["passed"]:
             return manual_stop("SELL_POSITION_CHECK", sell_position_check)
+
+        if submitted_order_ids(sell_results):
+            sell_cash_reconciliation = reconcile_phase_cash(
+                side="SELL",
+                cash_before=cash,
+                cash_after=after_sell_cash,
+                results=sell_results,
+                trades=_reconciliation_trades(sell_reconciliation),
+                schedule=fee_schedule,
+                absolute_tolerance=float(args.cash_reconcile_absolute_tolerance),
+                relative_tolerance_bps=float(args.cash_reconcile_relative_tolerance_bps),
+            )
+            _write_json(out / "sell_phase_cash_reconciliation.json", sell_cash_reconciliation)
+            journal_event({"event": "SELL_CASH_RECONCILIATION", **sell_cash_reconciliation})
+            if sell_cash_reconciliation.get("passed") is not True:
+                return manual_stop("SELL_CASH_RECONCILIATION", sell_cash_reconciliation)
 
         after_sell_binding = {**binding, "phase": "AFTER_SELL"}
         after_sell_runtime = _runtime_report(
@@ -492,7 +712,11 @@ def main() -> int:
             target_count=len(target_codes),
             target_weights=effective_target_weights,
         )
-        buy_reserve = estimate_buy_cash_reserve(phases.buys, cost=cost)
+        buy_reserve = estimate_buy_cash_reserve(
+            phases.buys,
+            cost=cost,
+            fee_schedule=fee_schedule,
+        )
         buy_reserve["fresh_cash_before_buy"] = float(after_sell_cash)
         _write_json(out / "buy_phase_pretrade_risk.json", buy_risk)
         _write_json(out / "buy_phase_cash_reserve.json", buy_reserve)
@@ -519,14 +743,25 @@ def main() -> int:
             on_event=journal_event,
             starting_cash=after_sell_cash,
             cost=cost,
+            fee_schedule=fee_schedule,
             batch_tag=batch_tag,
             phase="BUY",
+            freshness_policy=freshness_policy,
+            require_fresh_quotes=True,
+            on_freshness=lambda report: capture_freshness("buy_submission_quotes", report),
         )
         _write_json(out / "buy_phase_results.json", {"orders": buy_results})
         pd.DataFrame(buy_results).to_csv(out / "buy_phase_results.csv", index=False, encoding="utf-8-sig")
-        buy_reconciliation = _reconcile_phase(broker, buy_results)
+        buy_reconciliation = _reconcile_phase(
+            broker,
+            buy_results,
+            freshness_policy=freshness_policy,
+        )
         _write_json(out / "buy_phase_reconciliation.json", buy_reconciliation)
         journal_event({"event": "BUY_RECONCILIATION", **buy_reconciliation})
+        buy_recon_freshness = buy_reconciliation.get("freshness")
+        if isinstance(buy_recon_freshness, Mapping):
+            capture_freshness("buy_reconciliation_queries", buy_recon_freshness)
 
         if buy_reconciliation.get("requires_manual_reconciliation"):
             return manual_stop(
@@ -542,7 +777,15 @@ def main() -> int:
         _write_json(out / "submitted_orders.json", {"orders": all_results})
         pd.DataFrame(all_results).to_csv(out / "submitted_orders.csv", index=False, encoding="utf-8-sig")
 
-        final_asset, final_cash, final_positions = broker.snapshot()
+        (final_asset, final_cash, final_positions), final_snapshot_freshness = _timed_query(
+            "account_snapshot:final",
+            broker.snapshot,
+            policy=freshness_policy,
+        )
+        capture_freshness("final_account_snapshot", final_snapshot_freshness)
+        if final_snapshot_freshness.get("passed") is not True:
+            return manual_stop("FINAL_SNAPSHOT_FRESHNESS", final_snapshot_freshness)
+
         final_position_check = validate_position_effect(
             after_sell_positions,
             buy_results,
@@ -552,12 +795,33 @@ def main() -> int:
         if not final_position_check["passed"]:
             return manual_stop("BUY_POSITION_CHECK", final_position_check)
 
+        if submitted_order_ids(buy_results):
+            buy_cash_reconciliation = reconcile_phase_cash(
+                side="BUY",
+                cash_before=after_sell_cash,
+                cash_after=final_cash,
+                results=buy_results,
+                trades=_reconciliation_trades(buy_reconciliation),
+                schedule=fee_schedule,
+                absolute_tolerance=float(args.cash_reconcile_absolute_tolerance),
+                relative_tolerance_bps=float(args.cash_reconcile_relative_tolerance_bps),
+            )
+            _write_json(out / "buy_phase_cash_reconciliation.json", buy_cash_reconciliation)
+            journal_event({"event": "BUY_CASH_RECONCILIATION", **buy_cash_reconciliation})
+            if buy_cash_reconciliation.get("passed") is not True:
+                return manual_stop("BUY_CASH_RECONCILIATION", buy_cash_reconciliation)
+
+        final_freshness = write_freshness()
+        if final_freshness.get("passed") is not True or broker.broker_health().get("connection_lost") is True:
+            return manual_stop("FINAL_FRESHNESS_OR_CONNECTION", final_freshness)
+
         final_snapshot = {
             "total_asset": final_asset,
             "cash": final_cash,
             "position_count": len(final_positions),
             "batch_id": batch_id,
             "account_key": account_key,
+            "broker_health": broker.broker_health(),
         }
         _write_json(out / "final_account_snapshot.json", final_snapshot)
 
@@ -583,6 +847,7 @@ def main() -> int:
                 "event": "EXECUTION_COMPLETE_PENDING_RELEASE",
                 "submitted_order_ids": all_submitted_ids,
                 "final_cash": final_cash,
+                "broker_health": broker.broker_health(),
             }
         )
         update_execution_batch(
