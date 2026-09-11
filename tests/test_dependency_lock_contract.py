@@ -9,6 +9,11 @@ from qmt_quant.workflow_contract import load_workflow, matrix_values, normalized
 ROOT = Path(__file__).resolve().parents[1]
 REQ = ROOT / "requirements.txt"
 CI = ROOT / ".github" / "workflows" / "tests.yml"
+RESEARCH_WORKFLOWS = (
+    ROOT / ".github" / "workflows" / "v5-c-nested-research.yml",
+    ROOT / ".github" / "workflows" / "v5-c7-nested-research.yml",
+    ROOT / ".github" / "workflows" / "v5-c9-neutralization-diagnostics.yml",
+)
 
 
 def test_all_repository_requirements_are_exactly_pinned():
@@ -30,3 +35,13 @@ def test_ci_installs_the_same_locked_requirements_on_all_python_versions():
     assert "python -m pip install -r requirements.txt" in install
     assert "python -m pip check" in install
     assert "python -m pip install numpy pandas pyarrow pytest pytest-cov" not in install
+
+
+def test_authoritative_c_research_workflows_use_locked_repository_dependencies():
+    for path in RESEARCH_WORKFLOWS:
+        workflow = load_workflow(path)
+        job = "diagnostics" if "c9" in path.name else "research"
+        install = normalized_run(workflow, job, "Install research dependencies")
+        assert "python -m pip install -r requirements.txt" in install, path.name
+        assert "python -m pip check" in install, path.name
+        assert "python -m pip install numpy pandas pyarrow" not in install, path.name
