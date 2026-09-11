@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from typing import Mapping, Sequence
 
 from .backtest_execution import commission
@@ -14,6 +15,28 @@ class PhasePlan:
     buys: tuple[OrderInstruction, ...]
 
 
+def _strict_int(value: object, *, name: str, default: int = 0) -> int:
+    if value is None or value == "":
+        return int(default)
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, not bool")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError(f"{name} must be a finite integer")
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return int(default)
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer") from exc
+    raise ValueError(f"{name} must be an integer")
+
+
 def split_order_plan(plan: Sequence[OrderInstruction]) -> PhasePlan:
     sells = tuple(item for item in plan if item.side == "SELL")
     buys = tuple(item for item in plan if item.side == "BUY")
@@ -24,14 +47,14 @@ def split_order_plan(plan: Sequence[OrderInstruction]) -> PhasePlan:
 
 
 def submitted_order_ids(results: Sequence[Mapping[str, object]]) -> list[int]:
-    return sorted(
-        {
-            int(row.get("order_id", 0) or 0)
-            for row in results
-            if str(row.get("status", "")) == "SUBMITTED"
-            and int(row.get("order_id", 0) or 0) > 0
-        }
-    )
+    ids: set[int] = set()
+    for row in results:
+        if str(row.get("status", "")) != "SUBMITTED":
+            continue
+        order_id = _strict_int(row.get("order_id"), name="order_id")
+        if order_id > 0:
+            ids.add(order_id)
+    return sorted(ids)
 
 
 def has_uncertain_submission(results: Sequence[Mapping[str, object]]) -> bool:
@@ -51,7 +74,7 @@ def expected_positions_after_full_sells(
         if str(row.get("status", "")) != "SUBMITTED":
             continue
         code = str(row.get("code", ""))
-        shares = int(row.get("shares", 0) or 0)
+        shares = _strict_int(row.get("shares"), name=f"shares:{code}")
         expected[code] = max(expected.get(code, 0) - shares, 0)
     return expected
 
