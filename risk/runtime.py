@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Mapping
 
 
@@ -22,20 +23,32 @@ def evaluate_runtime_risk(
 ) -> dict:
     """Evaluate dynamic trading risk without creating any trading side effect.
 
-    The result is intentionally fail-closed.  It is a decision/report primitive only:
-    callers may refuse new orders when ``passed`` is false, but this function never
-    submits, cancels, or liquidates anything.
+    The result is intentionally fail-closed. Callers may refuse new orders when
+    ``passed`` is false, but this function never submits, cancels, or liquidates.
     """
     cfg = policy or RuntimeRiskPolicy()
     violations: list[str] = []
     start = float(start_of_day_equity)
     current = float(current_equity)
-    if start <= 0.0 or current < 0.0:
+    max_drawdown = float(cfg.max_intraday_drawdown)
+    max_position_loss = abs(float(cfg.max_position_loss))
+
+    if (
+        not math.isfinite(start)
+        or not math.isfinite(current)
+        or start <= 0.0
+        or current < 0.0
+        or not math.isfinite(max_drawdown)
+        or max_drawdown < 0.0
+        or max_drawdown > 1.0
+        or not math.isfinite(max_position_loss)
+        or max_position_loss > 1.0
+    ):
         violations.append("invalid_equity_state")
         drawdown = 1.0
     else:
         drawdown = max(0.0, 1.0 - current / start)
-        if drawdown > float(cfg.max_intraday_drawdown):
+        if drawdown > max_drawdown:
             violations.append(f"intraday_drawdown_circuit_breaker:{drawdown:.6f}")
 
     if bool(cfg.kill_switch):
@@ -47,9 +60,14 @@ def evaluate_runtime_risk(
         violations.append(f"blacklisted_target:{code}")
 
     losses: dict[str, float] = {}
+    invalid_position_returns: list[str] = []
     for code, value in (position_returns or {}).items():
         ret = float(value)
-        if ret <= -abs(float(cfg.max_position_loss)):
+        if not math.isfinite(ret):
+            invalid_position_returns.append(str(code))
+            violations.append(f"invalid_position_return:{code}")
+            continue
+        if ret <= -max_position_loss:
             losses[str(code)] = ret
             violations.append(f"position_stop_loss:{code}:{ret:.6f}")
 
@@ -59,6 +77,7 @@ def evaluate_runtime_risk(
         "intraday_drawdown": float(drawdown),
         "blacklisted_targets": blacklisted_targets,
         "stop_loss_positions": losses,
+        "invalid_position_returns": invalid_position_returns,
         "policy": {
             **asdict(cfg),
             "blacklist_codes": sorted(blacklist),
