@@ -56,6 +56,32 @@ def test_sell_position_effect_requires_full_observed_share_reduction() -> None:
     assert failed["mismatches"][0]["expected_volume"] == 300
 
 
+def test_sell_position_effect_blocks_unrelated_external_position_drift() -> None:
+    before = {
+        "000001.SZ": PositionSnapshot("000001.SZ", 500, 500),
+        "000002.SZ": PositionSnapshot("000002.SZ", 300, 300),
+    }
+    results = [
+        {
+            "code": "000001.SZ",
+            "side": "SELL",
+            "shares": 100,
+            "status": "SUBMITTED",
+            "order_id": 7,
+        }
+    ]
+    report = validate_sell_position_effect(
+        before,
+        results,
+        {
+            "000001.SZ": PositionSnapshot("000001.SZ", 400, 400),
+            "000002.SZ": PositionSnapshot("000002.SZ", 200, 200),
+        },
+    )
+    assert report["passed"] is False
+    assert any(item["code"] == "000002.SZ" for item in report["mismatches"])
+
+
 def test_buy_cash_reserve_includes_minimum_commission() -> None:
     reserve = estimate_buy_cash_reserve(
         [OrderInstruction("000001.SZ", "BUY", 100, 1.0, "increase")],
