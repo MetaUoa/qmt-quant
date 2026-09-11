@@ -47,6 +47,10 @@ def _binding_matches_bundle(binding: Mapping[str, object], bundle: object) -> tu
     return matches, batch_id, account_key
 
 
+def _buffer_is_drained(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == 0
+
+
 def main() -> int:
     args = parse_args()
     checks: dict[str, object] = {"market_date": str(china_market_date())}
@@ -130,17 +134,25 @@ def main() -> int:
         else:
             checks["freshness_binding_match"] = False
         if isinstance(broker_health, dict):
+            checks["broker_connected"] = broker_health.get("connected") is True
             checks["broker_connection_not_lost"] = broker_health.get("connection_lost") is False
             checks["broker_event_sink_healthy"] = broker_health.get("event_sink_failed") is False
+            checks["broker_callback_buffer_drained"] = _buffer_is_drained(
+                broker_health.get("buffered_event_count")
+            )
         else:
+            checks["broker_connected"] = False
             checks["broker_connection_not_lost"] = False
             checks["broker_event_sink_healthy"] = False
+            checks["broker_callback_buffer_drained"] = False
     else:
         checks["freshness_present"] = False
         checks["freshness_passed"] = False
         checks["freshness_binding_match"] = False
+        checks["broker_connected"] = False
         checks["broker_connection_not_lost"] = False
         checks["broker_event_sink_healthy"] = False
+        checks["broker_callback_buffer_drained"] = False
 
     mandatory = (
         "target_bundle_valid",
@@ -152,8 +164,10 @@ def main() -> int:
         "freshness_present",
         "freshness_passed",
         "freshness_binding_match",
+        "broker_connected",
         "broker_connection_not_lost",
         "broker_event_sink_healthy",
+        "broker_callback_buffer_drained",
     )
     checks["passed"] = all(checks.get(key) is True for key in mandatory)
     payload = {
