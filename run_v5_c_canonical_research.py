@@ -8,6 +8,7 @@ from qmt_quant.research_policy import (
     DEFAULT_RESEARCH_DATA_POLICY,
     assert_cli_float_floor,
     assert_cli_int_floor,
+    assert_pre_holdout_end,
 )
 from qmt_quant.research_runtime import install_v5_c_contracts
 
@@ -35,7 +36,9 @@ def _assert_data_policy(argv: list[str]) -> None:
 
 
 def main() -> int:
-    _assert_data_policy(sys.argv[1:])
+    argv = sys.argv[1:]
+    assert_pre_holdout_end(argv, context="C1 research")
+    _assert_data_policy(argv)
     install_v5_c_contracts(c1)
     return c1.main()
 
