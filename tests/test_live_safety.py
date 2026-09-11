@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 import json
 
 import pandas as pd
@@ -12,10 +13,24 @@ import qmt_quant.live_safety as live_safety
 SHA = "a" * 64
 
 
-def _write_targets(tmp_path, *, signal_date="2026-09-06", source=True):
+def _write_targets(
+    tmp_path,
+    *,
+    signal_date="2026-09-06",
+    source=True,
+    csv_signal_date=None,
+    csv_sha=SHA,
+):
     targets = tmp_path / "target_weights.csv"
     diagnostics = tmp_path / "signal_diagnostics.json"
-    pd.DataFrame({"code": ["000001.SZ"], "target_weight": [1.0]}).to_csv(targets, index=False)
+    pd.DataFrame(
+        {
+            "signal_date": [csv_signal_date or signal_date],
+            "strategy_sha256": [csv_sha],
+            "code": ["000001.SZ"],
+            "target_weight": [1.0],
+        }
+    ).to_csv(targets, index=False)
     payload = {"signal_date": signal_date, "selected_count": 1}
     if source:
         payload["strategy_source"] = {"kind": "legacy_strategy_config", "sha256": SHA}
@@ -37,12 +52,28 @@ def test_live_targets_require_strategy_fingerprint(tmp_path, monkeypatch):
         live_safety.validate_target_bundle(targets, diagnostics, require_current_session=True)
 
 
-def test_valid_live_target_bundle_returns_exact_sha(tmp_path, monkeypatch):
+def test_live_target_csv_sha_must_match_diagnostics(tmp_path, monkeypatch):
+    targets, diagnostics = _write_targets(tmp_path, csv_sha="b" * 64)
+    monkeypatch.setattr(live_safety, "china_market_date", lambda: date(2026, 9, 6))
+    with pytest.raises(RuntimeError, match="CSV strategy SHA256"):
+        live_safety.validate_target_bundle(targets, diagnostics, require_current_session=True)
+
+
+def test_live_target_csv_signal_date_must_match_diagnostics(tmp_path, monkeypatch):
+    targets, diagnostics = _write_targets(tmp_path, csv_signal_date="2026-09-05")
+    monkeypatch.setattr(live_safety, "china_market_date", lambda: date(2026, 9, 6))
+    with pytest.raises(RuntimeError, match="CSV signal_date"):
+        live_safety.validate_target_bundle(targets, diagnostics, require_current_session=True)
+
+
+def test_valid_live_target_bundle_returns_exact_sha_and_file_digest(tmp_path, monkeypatch):
     targets, diagnostics = _write_targets(tmp_path)
+    expected_digest = hashlib.sha256(targets.read_bytes()).hexdigest()
     monkeypatch.setattr(live_safety, "china_market_date", lambda: date(2026, 9, 6))
     bundle = live_safety.validate_target_bundle(targets, diagnostics, require_current_session=True)
     assert bundle.signal_date == date(2026, 9, 6)
     assert bundle.strategy_sha256 == SHA
+    assert bundle.target_file_sha256 == expected_digest
 
 
 def test_acceptance_must_bind_exact_strategy_sha(tmp_path):
