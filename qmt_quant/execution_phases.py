@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Mapping, Sequence
 
-from .config import CostConfig
 from .backtest_execution import commission
+from .config import CostConfig
 from .live_trader import OrderInstruction, PositionSnapshot
 
 
@@ -28,7 +28,8 @@ def submitted_order_ids(results: Sequence[Mapping[str, object]]) -> list[int]:
         {
             int(row.get("order_id", 0) or 0)
             for row in results
-            if str(row.get("status", "")) == "SUBMITTED" and int(row.get("order_id", 0) or 0) > 0
+            if str(row.get("status", "")) == "SUBMITTED"
+            and int(row.get("order_id", 0) or 0) > 0
         }
     )
 
@@ -60,16 +61,18 @@ def validate_sell_position_effect(
     sell_results: Sequence[Mapping[str, object]],
     after: Mapping[str, PositionSnapshot],
 ) -> dict:
+    """Require the post-sell snapshot to equal the expected full-fill share state.
+
+    This checks every observed position, not just sold symbols. An unrelated manual or
+    external trade during the live batch therefore blocks the BUY phase rather than
+    silently changing the account beneath the executor.
+    """
     expected = expected_positions_after_full_sells(before, sell_results)
+    observed = {str(code): int(position.volume) for code, position in after.items()}
     mismatches: list[dict[str, object]] = []
-    touched_codes = {
-        str(row.get("code", ""))
-        for row in sell_results
-        if str(row.get("status", "")) == "SUBMITTED"
-    }
-    for code in sorted(touched_codes):
+    for code in sorted(set(expected) | set(observed)):
         expected_volume = int(expected.get(code, 0))
-        observed_volume = int(after.get(code, PositionSnapshot(code, 0, 0)).volume)
+        observed_volume = int(observed.get(code, 0))
         if observed_volume != expected_volume:
             mismatches.append(
                 {
@@ -81,7 +84,8 @@ def validate_sell_position_effect(
     return {
         "passed": not mismatches,
         "mismatches": mismatches,
-        "expected_positions": {code: expected[code] for code in sorted(touched_codes)},
+        "expected_positions": expected,
+        "observed_positions": observed,
     }
 
 
