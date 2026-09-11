@@ -44,3 +44,4 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
         assert path in command
     assert "--ignore-missing-imports" in command
     assert "--check-untyped-defs" in command
+    assert "--explicit-package-bases" in command
