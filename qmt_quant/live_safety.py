@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 from typing import Mapping
@@ -76,13 +77,9 @@ def validate_target_bundle(
     if codes.duplicated().any():
         raise ValueError("target file contains duplicate codes")
     weights = pd.to_numeric(frame["target_weight"], errors="coerce")
-    if weights.isna().any() or (~weights.map(lambda value: bool(pd.notna(value)))).any():
+    if weights.isna().any() or not weights.astype(float).map(math.isfinite).all():
         raise ValueError("target weights must be finite values in [0, 1]")
     numeric_weights = weights.astype(float)
-    if (~numeric_weights.map(lambda value: bool(pd.api.types.is_number(value)))).any():
-        raise ValueError("target weights must be numeric")
-    if (~numeric_weights.map(lambda value: float(value) == float(value))).any():
-        raise ValueError("target weights must be finite values in [0, 1]")
     if (numeric_weights < 0.0).any() or (numeric_weights > 1.0).any():
         raise ValueError("target weights must be finite values in [0, 1]")
     if len(frame) and float(numeric_weights.sum()) > 1.000001:
@@ -97,7 +94,10 @@ def validate_target_bundle(
         name="expected_execution_session",
     )
     expires_after_session = _required_date(
-        diagnostics.get("expires_after_session", diagnostics.get("expected_execution_session", diagnostics.get("signal_date"))),
+        diagnostics.get(
+            "expires_after_session",
+            diagnostics.get("expected_execution_session", diagnostics.get("signal_date")),
+        ),
         name="expires_after_session",
     )
     if expected_execution_session <= signal_date:
