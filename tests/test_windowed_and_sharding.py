@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from prepare_free_data_shard import select_stock_shard
-from qmt_quant.windowed import context_start_for_window, run_window_backtest
+from qmt_quant.backtest import calculate_metrics
+from qmt_quant.windowed import (
+    _metric_equity_with_baseline,
+    context_start_for_window,
+    run_window_backtest,
+)
 
 
 def test_shards_are_disjoint_and_cover_all_symbols():
@@ -14,6 +20,25 @@ def test_shards_are_disjoint_and_cover_all_symbols():
     for i in range(len(sets)):
         for j in range(i + 1, len(sets)):
             assert sets[i].isdisjoint(sets[j])
+
+
+def test_window_metric_baseline_preserves_first_session_loss():
+    raw = pd.Series(
+        [100.0, 90.0, 90.0],
+        index=pd.to_datetime(["2024-12-31", "2025-01-02", "2025-01-03"]),
+    )
+    window = raw.loc[raw.index >= pd.Timestamp("2025-01-02")]
+    metric_equity, baseline_ts, synthetic = _metric_equity_with_baseline(
+        raw,
+        window,
+        actual_start=pd.Timestamp("2025-01-02"),
+        initial_cash=100.0,
+    )
+    metrics = calculate_metrics(metric_equity)
+    assert baseline_ts == pd.Timestamp("2024-12-31")
+    assert synthetic is False
+    assert metrics["total_return"] == pytest.approx(-0.10)
+    assert metrics["max_drawdown"] == pytest.approx(-0.10)
 
 
 def test_windowed_backtest_resets_at_requested_period(
@@ -38,6 +63,7 @@ def test_windowed_backtest_resets_at_requested_period(
     if not result.trades.empty:
         assert pd.to_datetime(result.trades["date"]).min() >= pd.Timestamp("2021-01-01")
     assert result.metrics["warmup_truncated"] is False
+    assert result.metrics["window_metric_baseline_synthetic"] is False
 
 
 def test_windowed_backtest_does_not_include_future_dates(
