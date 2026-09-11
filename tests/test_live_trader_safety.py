@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from qmt_quant.config import CostConfig
 from qmt_quant.live_trader import BrokerStateUnknown, OrderInstruction, QmtBroker
 
 
@@ -17,6 +18,12 @@ def _bare_broker():
     broker.trader = None
     broker.account = None
     return broker
+
+
+def _install_xtconstant(monkeypatch):
+    xtquant = ModuleType("xtquant")
+    xtquant.xtconstant = SimpleNamespace(STOCK_BUY=23, STOCK_SELL=24, FIX_PRICE=11)
+    monkeypatch.setitem(sys.modules, "xtquant", xtquant)
 
 
 def test_connect_retries_with_fresh_trader_instances():
@@ -73,10 +80,29 @@ def test_order_and_trade_queries_reject_ambiguous_none():
         broker.query_trades()
 
 
+def test_query_orders_preserves_recovery_tag_and_strategy_name():
+    broker = _bare_broker()
+    broker.trader = SimpleNamespace(
+        query_stock_orders=lambda _account, _cancelable: [
+            SimpleNamespace(
+                order_id=7,
+                stock_code="000001.SZ",
+                order_volume=100,
+                traded_volume=100,
+                order_status=56,
+                order_remark="qmtq:aaaaaaaaaaaa:S:0",
+                strategy_name="qmt_quant_v7",
+            )
+        ]
+    )
+    broker.account = object()
+    row = broker.query_orders()[0]
+    assert row["order_remark"] == "qmtq:aaaaaaaaaaaa:S:0"
+    assert row["strategy_name"] == "qmt_quant_v7"
+
+
 def test_submit_exception_is_journaled_and_stops_batch(monkeypatch):
-    xtquant = ModuleType("xtquant")
-    xtquant.xtconstant = SimpleNamespace(STOCK_BUY=23, STOCK_SELL=24, FIX_PRICE=11)
-    monkeypatch.setitem(sys.modules, "xtquant", xtquant)
+    _install_xtconstant(monkeypatch)
 
     class Trader:
         def order_stock(self, *_args, **_kwargs):
@@ -98,16 +124,20 @@ def test_submit_exception_is_journaled_and_stops_batch(monkeypatch):
         OrderInstruction("000001.SZ", "SELL", 100, 10.0, "first"),
         OrderInstruction("000002.SZ", "SELL", 100, 10.0, "must_not_run"),
     ]
-    results = broker.submit_plan(plan, on_event=events.append)
+    results = broker.submit_plan(
+        plan,
+        on_event=events.append,
+        batch_tag="a" * 12,
+        phase="SELL",
+    )
     assert len(results) == 1
     assert results[0]["status"] == "SUBMIT_EXCEPTION"
+    assert results[0]["order_remark"] == "qmtq:aaaaaaaaaaaa:S:0"
     assert [row["event"] for row in events] == ["INTENT", "SUBMIT_ATTEMPT", "RESULT"]
 
 
 def test_buy_cash_recheck_rejects_unknown_asset_before_order_submission(monkeypatch):
-    xtquant = ModuleType("xtquant")
-    xtquant.xtconstant = SimpleNamespace(STOCK_BUY=23, STOCK_SELL=24, FIX_PRICE=11)
-    monkeypatch.setitem(sys.modules, "xtquant", xtquant)
+    _install_xtconstant(monkeypatch)
 
     class Trader:
         def __init__(self):
@@ -134,8 +164,66 @@ def test_buy_cash_recheck_rejects_unknown_asset_before_order_submission(monkeypa
     }
     plan = [OrderInstruction("000001.SZ", "BUY", 100, 10.0, "increase")]
     with pytest.raises(BrokerStateUnknown, match="during BUY cash check"):
-        broker.submit_plan(plan)
+        broker.submit_plan(plan, starting_cash=1000.0)
     assert trader.order_calls == 0
+
+
+def test_buy_phase_requires_starting_cash(monkeypatch):
+    _install_xtconstant(monkeypatch)
+    broker = _bare_broker()
+    broker.trader = SimpleNamespace()
+    broker.account = object()
+    plan = [OrderInstruction("000001.SZ", "BUY", 100, 10.0, "increase")]
+    with pytest.raises(ValueError, match="starting_cash"):
+        broker.submit_plan(plan)
+
+
+def test_fee_aware_local_cash_reservation_prevents_double_spend(monkeypatch):
+    _install_xtconstant(monkeypatch)
+
+    class Trader:
+        def __init__(self):
+            self.order_calls = []
+
+        def query_stock_asset(self, _account):
+            # Simulate a broker snapshot that has not yet reflected the first order's
+            # frozen cash. Local reservation must still protect the second order.
+            return SimpleNamespace(cash=1005.0)
+
+        def order_stock(self, *args, **_kwargs):
+            self.order_calls.append(args)
+            return 100 + len(self.order_calls)
+
+    trader = Trader()
+    broker = _bare_broker()
+    broker.trader = trader
+    broker.account = object()
+    broker.full_tick = lambda codes: {
+        code: {
+            "lastPrice": 5.0,
+            "askPrice": [5.0],
+            "bidPrice": [5.0],
+            "lastClose": 4.9,
+        }
+        for code in codes
+    }
+    plan = [
+        OrderInstruction("000001.SZ", "BUY", 100, 5.0, "increase"),
+        OrderInstruction("000002.SZ", "BUY", 100, 5.0, "increase"),
+    ]
+    results = broker.submit_plan(
+        plan,
+        starting_cash=1005.0,
+        cost=CostConfig(commission_rate=0.00025, min_commission=5.0, lot_size=100),
+        batch_tag="a" * 12,
+        phase="BUY",
+    )
+    assert [row["status"] for row in results] == ["SUBMITTED", "SKIP_INSUFFICIENT_CASH"]
+    assert results[0]["estimated_commission"] == 5.0
+    assert results[0]["reserved_cash"] == pytest.approx(505.4)
+    assert results[0]["remaining_local_cash_budget"] == pytest.approx(499.6)
+    assert results[0]["order_remark"] == "qmtq:aaaaaaaaaaaa:B:0"
+    assert len(trader.order_calls) == 1
 
 
 def test_reconcile_flags_partial_fill_for_manual_action():

@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Mapping
 
 
-_TERMINAL_BATCH_STATUSES = frozenset({"COMPLETED", "INCOMPLETE", "BLOCKED_ACCOUNT_LOCK"})
+_TERMINAL_BATCH_STATUSES = frozenset(
+    {"COMPLETED", "INCOMPLETE", "BLOCKED_ACCOUNT_LOCK", "RECOVERED_RELEASED"}
+)
 
 
 def account_execution_key(*, account_id: str, account_type: str) -> str:
@@ -91,12 +93,7 @@ def reserve_execution_batch(
     batch_id: str,
     metadata: Mapping[str, object],
 ) -> Path:
-    """Atomically reserve one live batch.
-
-    The marker is deliberately persistent after success or failure. Re-running the
-    exact account/strategy/signal/target bundle therefore requires explicit operator
-    review rather than silently submitting the same batch twice.
-    """
+    """Atomically reserve one live batch and permanently retain its marker."""
     directory = Path(root)
     path = directory / f"{batch_id}.json"
     payload = {
@@ -160,11 +157,7 @@ def reserve_account_execution_lock(
     batch_id: str,
     metadata: Mapping[str, object] | None = None,
 ) -> Path:
-    """Atomically permit only one active live batch for an account.
-
-    The lock is independent of the output/report directory so two executor invocations
-    cannot bypass one another by choosing different ``--output`` paths.
-    """
+    """Atomically permit only one active live batch for an account."""
     path = account_lock_path(root, account_key=account_key)
     payload = {
         "account_key": str(account_key),
