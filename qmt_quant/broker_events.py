@@ -45,22 +45,34 @@ def _text(obj: object, name: str) -> str:
 
 def _integer(obj: object, name: str) -> int | None:
     value = getattr(obj, name, None)
-    if value in (None, "") or isinstance(value, bool):
+    if value is None or value == "" or isinstance(value, bool):
         return None
-    try:
-        number = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return None
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _number(obj: object, name: str) -> float | None:
     value = getattr(obj, name, None)
-    if value in (None, "") or isinstance(value, bool):
+    if value is None or value == "" or isinstance(value, bool):
         return None
-    try:
+    if isinstance(value, (int, float)):
         number = float(value)
-    except (TypeError, ValueError, OverflowError):
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            return None
+    else:
         return None
     return number if math.isfinite(number) else None
 
