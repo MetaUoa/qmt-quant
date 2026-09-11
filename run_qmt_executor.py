@@ -267,13 +267,15 @@ def _freshness_payload(
     checks: list[dict[str, object]],
     broker: QmtBroker,
 ) -> dict[str, object]:
-    passed = all(
-        isinstance(item.get("report"), Mapping) and item["report"].get("passed") is True
-        for item in checks
-    )
+    passed = True
+    for item in checks:
+        report = item.get("report")
+        if not isinstance(report, Mapping) or report.get("passed") is not True:
+            passed = False
+            break
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "passed": bool(passed),
+        "passed": passed,
         "binding": dict(binding or {}),
         "broker_health": broker.broker_health(),
         "checks": checks,
