@@ -1,11 +1,38 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import math
-from typing import Callable
+import os
+from pathlib import Path
+import threading
+from typing import Callable, Mapping
 
 
 EventSink = Callable[[dict[str, object]], None]
+
+
+class JsonlEventJournal:
+    """Thread-safe fsync JSONL writer shared by executor and XtQuant callbacks."""
+
+    def __init__(self, path: str | Path, *, context: Mapping[str, object] | None = None) -> None:
+        self.path = Path(path)
+        self.context = dict(context or {})
+        self._lock = threading.Lock()
+
+    def append(self, payload: Mapping[str, object]) -> None:
+        record = {
+            "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+            **self.context,
+            **dict(payload),
+        }
+        encoded = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
 
 
 def _now_iso() -> str:
