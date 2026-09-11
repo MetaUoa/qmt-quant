@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -21,6 +22,7 @@ class ValidatedTargets:
     diagnostics: dict
     signal_date: date
     strategy_sha256: str
+    target_file_sha256: str
 
 
 def china_market_date() -> date:
@@ -40,12 +42,16 @@ def validate_target_bundle(
     if not diagnostics_file.exists():
         raise FileNotFoundError(diagnostics_file)
 
+    raw_target_bytes = targets_file.read_bytes()
+    target_file_sha256 = hashlib.sha256(raw_target_bytes).hexdigest()
     frame = pd.read_csv(targets_file)
     required = {"code", "target_weight"}
     missing = sorted(required.difference(frame.columns))
     if missing:
         raise ValueError(f"target file missing columns: {', '.join(missing)}")
-    codes = frame["code"].dropna().astype(str)
+    if frame["code"].isna().any() or frame["code"].astype(str).str.strip().eq("").any():
+        raise ValueError("target file contains missing or blank codes")
+    codes = frame["code"].astype(str)
     if codes.duplicated().any():
         raise ValueError("target file contains duplicate codes")
     weights = pd.to_numeric(frame["target_weight"], errors="coerce")
@@ -85,6 +91,15 @@ def validate_target_bundle(
         strategy_sha256 = str(source.get("sha256", ""))
         if not _SHA256_RE.fullmatch(strategy_sha256):
             raise RuntimeError("live targets require a valid strategy SHA256 fingerprint")
+        for column in ("signal_date", "strategy_sha256"):
+            if column not in frame.columns:
+                raise RuntimeError(f"live target CSV requires {column} column")
+        csv_shas = sorted(set(frame["strategy_sha256"].dropna().astype(str)))
+        if csv_shas != [strategy_sha256]:
+            raise RuntimeError("target CSV strategy SHA256 does not match signal diagnostics")
+        csv_dates = pd.to_datetime(frame["signal_date"], errors="coerce").dt.normalize()
+        if csv_dates.isna().any() or not csv_dates.eq(signal_ts).all():
+            raise RuntimeError("target CSV signal_date does not match signal diagnostics")
     else:
         strategy_sha256 = str(source.get("sha256", "")) if isinstance(source, Mapping) else ""
 
@@ -93,6 +108,7 @@ def validate_target_bundle(
         diagnostics=dict(diagnostics),
         signal_date=signal_date,
         strategy_sha256=strategy_sha256,
+        target_file_sha256=target_file_sha256,
     )
 
 
