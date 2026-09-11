@@ -68,6 +68,7 @@ jobs:
           monitoring/alerts.py
           --ignore-missing-imports
           --check-untyped-defs
+          --explicit-package-bases
       - name: Run automated offline tests
         shell: pwsh
         run: python run_automated_tests.py
