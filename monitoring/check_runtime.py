@@ -136,6 +136,7 @@ def main() -> int:
         if isinstance(broker_health, dict):
             checks["broker_connected"] = broker_health.get("connected") is True
             checks["broker_connection_not_lost"] = broker_health.get("connection_lost") is False
+            checks["broker_event_sink_attached"] = broker_health.get("event_sink_attached") is True
             checks["broker_event_sink_healthy"] = broker_health.get("event_sink_failed") is False
             checks["broker_callback_buffer_drained"] = _buffer_is_drained(
                 broker_health.get("buffered_event_count")
@@ -143,6 +144,7 @@ def main() -> int:
         else:
             checks["broker_connected"] = False
             checks["broker_connection_not_lost"] = False
+            checks["broker_event_sink_attached"] = False
             checks["broker_event_sink_healthy"] = False
             checks["broker_callback_buffer_drained"] = False
     else:
@@ -151,6 +153,7 @@ def main() -> int:
         checks["freshness_binding_match"] = False
         checks["broker_connected"] = False
         checks["broker_connection_not_lost"] = False
+        checks["broker_event_sink_attached"] = False
         checks["broker_event_sink_healthy"] = False
         checks["broker_callback_buffer_drained"] = False
 
@@ -166,6 +169,7 @@ def main() -> int:
         "freshness_binding_match",
         "broker_connected",
         "broker_connection_not_lost",
+        "broker_event_sink_attached",
         "broker_event_sink_healthy",
         "broker_callback_buffer_drained",
     )
