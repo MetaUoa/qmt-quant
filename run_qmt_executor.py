@@ -16,6 +16,8 @@ from qmt_quant.execution_phases import (
     incomplete_results,
     split_order_plan,
     submitted_order_ids,
+    validate_full_fill_reconciliation,
+    validate_position_effect,
     validate_sell_position_effect,
 )
 from qmt_quant.execution_state import (
@@ -110,6 +112,10 @@ def _reconcile_phase(broker: QmtBroker, results: list[dict]) -> dict:
         reconciliation["requires_manual_reconciliation"] = True
         reconciliation["uncertain_submit_exception"] = True
     reconciliation["submitted_order_ids"] = ids
+    full_fill = validate_full_fill_reconciliation(results, reconciliation)
+    reconciliation["full_fill_check"] = full_fill
+    if not full_fill["passed"]:
+        reconciliation["requires_manual_reconciliation"] = True
     return reconciliation
 
 
@@ -537,6 +543,15 @@ def main() -> int:
         pd.DataFrame(all_results).to_csv(out / "submitted_orders.csv", index=False, encoding="utf-8-sig")
 
         final_asset, final_cash, final_positions = broker.snapshot()
+        final_position_check = validate_position_effect(
+            after_sell_positions,
+            buy_results,
+            final_positions,
+        )
+        _write_json(out / "buy_phase_position_check.json", final_position_check)
+        if not final_position_check["passed"]:
+            return manual_stop("BUY_POSITION_CHECK", final_position_check)
+
         final_snapshot = {
             "total_asset": final_asset,
             "cash": final_cash,
