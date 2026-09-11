@@ -4,30 +4,16 @@ import sys
 
 import run_v5_c_nested_research as c1
 
+from qmt_quant.research_policy import assert_pre_holdout_end
 from qmt_quant.research_runtime import install_v5_c_contracts
 
 
-_MAX_RESEARCH_END = "20251231"
 _OriginalCoreAlphaPolicy = c1.CoreAlphaPolicy
 _OriginalFrozenCandidate = c1.FrozenCandidate
 
 
-def _arg_value(argv: list[str], name: str) -> str | None:
-    try:
-        index = argv.index(name)
-    except ValueError:
-        return None
-    if index + 1 >= len(argv):
-        raise RuntimeError(f"missing value for {name}")
-    return argv[index + 1]
-
-
 def _assert_pre_2026_only(argv: list[str]) -> None:
-    end = (_arg_value(argv, "--end") or _MAX_RESEARCH_END).replace("-", "")
-    if not end.isdigit() or len(end) != 8:
-        raise RuntimeError("C7 research end must be YYYYMMDD or YYYY-MM-DD")
-    if end > _MAX_RESEARCH_END:
-        raise RuntimeError("C7 is pre-2026 research only; holdout remains blinded")
+    assert_pre_holdout_end(argv, context="C7 research")
 
 
 def _stability_policy(*args, **kwargs):
