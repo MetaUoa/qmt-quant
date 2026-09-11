@@ -210,11 +210,13 @@ def _build_fold_safe_diagnostics(output: Path) -> dict[str, Any]:
     return payload
 
 
-def _remove_forbidden_stale_outputs(output: Path) -> None:
-    for name in _FORBIDDEN_C1_OUTPUTS:
-        path = output / name
-        if path.exists():
-            path.unlink()
+def _assert_output_namespace_safe(output: Path) -> None:
+    conflicts = [name for name in _FORBIDDEN_C1_OUTPUTS if (output / name).exists()]
+    if conflicts:
+        raise RuntimeError(
+            "C9 diagnostics refuse to delete or overwrite C1 selection artifacts; "
+            "use a dedicated output directory. Conflicts: " + ", ".join(conflicts)
+        )
 
 
 def _assert_no_forbidden_c1_outputs(output: Path) -> None:
@@ -229,7 +231,7 @@ def main() -> int:
     _assert_data_policy(argv)
     output = Path(_arg_value(argv, "--output") or "output/v5_c_nested")
     output.mkdir(parents=True, exist_ok=True)
-    _remove_forbidden_stale_outputs(output)
+    _assert_output_namespace_safe(output)
     _CAPTURED.clear()
     _CAPTURED_FOLDS.clear()
 
