@@ -91,6 +91,8 @@ def _require_rows(rows: Iterable[object] | None, query_name: str) -> list[object
 class QmtBroker:
     """Thin MiniQMT execution adapter with fail-closed state and callback handling."""
 
+    _MAX_PRE_JOURNAL_EVENTS = 1000
+
     def __init__(self, userdata_path: str, account_id: str, session_id: int, account_type: str = "STOCK") -> None:
         try:
             from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
@@ -122,14 +124,23 @@ class QmtBroker:
         self._last_broker_event_at_utc = str(
             record.get("broker_event_received_at_utc") or datetime.now(timezone.utc).isoformat()
         )
+        actual_account = str(record.get("account_id", "") or "").strip()
+        if actual_account and actual_account != self.account_id:
+            self._event_sink_error = (
+                f"callback account mismatch: expected {self.account_id}, observed {actual_account}"
+            )
+
         sink = getattr(self, "_event_sink", None)
         if sink is None:
             buffer = getattr(self, "_event_buffer", None)
             if buffer is None:
                 self._event_buffer = []
                 buffer = self._event_buffer
-            if len(buffer) >= 1000:
-                buffer.pop(0)
+            if len(buffer) >= self._MAX_PRE_JOURNAL_EVENTS:
+                self._event_sink_error = (
+                    "pre-journal callback buffer overflow; callback audit history is incomplete"
+                )
+                return
             buffer.append(record)
             return
         try:
@@ -140,8 +151,7 @@ class QmtBroker:
     def attach_event_sink(self, sink: EventSink) -> None:
         if not callable(sink):
             raise TypeError("broker event sink must be callable")
-        if getattr(self, "_event_sink_error", None):
-            raise BrokerStateUnknown("broker callback journal previously failed")
+        prior_error = getattr(self, "_event_sink_error", None)
         self._event_sink = sink
         buffered = list(getattr(self, "_event_buffer", []))
         self._event_buffer = []
@@ -151,11 +161,17 @@ class QmtBroker:
             except Exception as exc:
                 self._event_sink_error = f"{type(exc).__name__}: {exc}"
                 raise BrokerStateUnknown("failed to flush buffered broker callback events") from exc
+        if prior_error:
+            self._event_sink_error = str(prior_error)
+            raise BrokerStateUnknown(
+                f"broker callback audit was invalid before journal attachment: {prior_error}"
+            )
 
     def broker_health(self) -> dict[str, object]:
         return {
             "connected": bool(self.trader is not None and self.account is not None),
             "connection_lost": bool(getattr(self, "_connection_lost", False)),
+            "event_sink_attached": getattr(self, "_event_sink", None) is not None,
             "event_sink_failed": bool(getattr(self, "_event_sink_error", None)),
             "event_sink_error": getattr(self, "_event_sink_error", None),
             "connected_at_utc": getattr(self, "_connected_at_utc", None),
@@ -171,7 +187,7 @@ class QmtBroker:
                 "MiniQMT disconnect callback was observed; automatic reconnect is disabled during a batch"
             )
         if getattr(self, "_event_sink_error", None):
-            raise BrokerStateUnknown("broker callback journal failed; live state is no longer auditable")
+            raise BrokerStateUnknown("broker callback audit failed; live state is no longer auditable")
 
     def connect(self, *, max_attempts: int = 3, retry_delay_seconds: float = 1.0) -> None:
         attempts = max(int(max_attempts), 1)
