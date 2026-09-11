@@ -10,6 +10,7 @@ from qmt_quant.research_policy import (
     assert_cli_int_floor,
     assert_data_audit_thresholds,
     assert_float_floor_value,
+    assert_pre_holdout_end,
 )
 from run_v5_b_canonical_research import _assert_data_policy as assert_b_policy
 from run_v5_c_canonical_research import _assert_data_policy as assert_c_policy
@@ -38,6 +39,42 @@ def test_cli_floor_helpers_allow_equal_or_stricter_values() -> None:
         minimum=50,
         default=50,
     ) == 60
+
+
+def test_cli_floor_helpers_accept_equals_syntax() -> None:
+    assert assert_cli_float_floor(
+        ["--min-symbol-coverage=0.99"],
+        "--min-symbol-coverage",
+        minimum=0.98,
+        default=0.98,
+    ) == 0.99
+    assert assert_cli_int_floor(
+        ["--min-symbols-per-date=60"],
+        "--min-symbols-per-date",
+        minimum=50,
+        default=50,
+    ) == 60
+
+
+def test_cli_policy_rejects_duplicate_long_options() -> None:
+    with pytest.raises(RuntimeError, match="duplicate --min-symbol-coverage"):
+        assert_cli_float_floor(
+            ["--min-symbol-coverage", "0.98", "--min-symbol-coverage=0.99"],
+            "--min-symbol-coverage",
+            minimum=0.98,
+            default=0.98,
+        )
+
+
+def test_pre_holdout_boundary_rejects_equals_syntax_and_duplicates() -> None:
+    assert assert_pre_holdout_end(["--end=20251231"], context="unit") == "20251231"
+    with pytest.raises(RuntimeError, match="holdout remains blinded"):
+        assert_pre_holdout_end(["--end=20260101"], context="unit")
+    with pytest.raises(RuntimeError, match="duplicate --end"):
+        assert_pre_holdout_end(
+            ["--end", "20251231", "--end=20260101"],
+            context="unit",
+        )
 
 
 def test_cli_floor_helpers_reject_loosened_thresholds() -> None:
