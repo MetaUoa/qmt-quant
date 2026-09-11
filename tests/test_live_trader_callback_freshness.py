@@ -50,7 +50,7 @@ def test_callback_sink_failure_poison_state_blocks_new_orders() -> None:
     broker.attach_event_sink(broken_sink)
     broker._record_broker_event({"event": "BROKER_ORDER"})
     assert broker.broker_health()["event_sink_failed"] is True
-    with pytest.raises(BrokerStateUnknown, match="journal failed"):
+    with pytest.raises(BrokerStateUnknown, match="callback audit failed"):
         broker._require_connection_healthy()
 
 
@@ -64,6 +64,29 @@ def test_buffered_callback_failure_during_sink_attach_fails_closed() -> None:
     with pytest.raises(BrokerStateUnknown, match="flush buffered"):
         broker.attach_event_sink(broken_sink)
     assert broker.broker_health()["event_sink_failed"] is True
+
+
+def test_callback_from_wrong_account_is_journaled_then_blocks_execution() -> None:
+    broker = _bare_broker()
+    broker._record_broker_event({"event": "BROKER_ORDER", "account_id": "other"})
+    observed: list[dict[str, object]] = []
+    with pytest.raises(BrokerStateUnknown, match="callback audit was invalid"):
+        broker.attach_event_sink(observed.append)
+    assert observed[0]["account_id"] == "other"
+    assert "account mismatch" in str(broker.broker_health()["event_sink_error"])
+
+
+def test_pre_journal_callback_overflow_fails_closed_without_silent_eviction() -> None:
+    broker = _bare_broker()
+    broker._MAX_PRE_JOURNAL_EVENTS = 2
+    broker._record_broker_event({"event": "ONE"})
+    broker._record_broker_event({"event": "TWO"})
+    broker._record_broker_event({"event": "THREE"})
+    assert [row["event"] for row in broker._event_buffer] == ["ONE", "TWO"]
+    observed: list[dict[str, object]] = []
+    with pytest.raises(BrokerStateUnknown, match="buffer overflow"):
+        broker.attach_event_sink(observed.append)
+    assert [row["event"] for row in observed] == ["ONE", "TWO"]
 
 
 def test_submit_plan_rejects_stale_quotes_before_order_stock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,4 +130,6 @@ def test_callback_buffer_is_flushed_in_original_order() -> None:
     observed: list[str] = []
     broker.attach_event_sink(lambda event: observed.append(str(event["event"])))
     assert observed == ["ONE", "TWO"]
-    assert broker.broker_health()["buffered_event_count"] == 0
+    health = broker.broker_health()
+    assert health["buffered_event_count"] == 0
+    assert health["event_sink_attached"] is True
