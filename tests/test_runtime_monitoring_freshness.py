@@ -101,6 +101,7 @@ def test_monitor_passes_only_with_connected_drained_callback_state(tmp_path: Pat
         broker_health={
             "connected": True,
             "connection_lost": False,
+            "event_sink_attached": True,
             "event_sink_failed": False,
             "buffered_event_count": 0,
         },
@@ -121,12 +122,46 @@ def test_monitor_fails_missing_freshness_artifact(tmp_path: Path, monkeypatch) -
     assert payload["checks"]["passed"] is False
 
 
-def test_monitor_fails_disconnect_sink_error_or_undrained_buffer(tmp_path: Path, monkeypatch) -> None:
+def test_monitor_fails_disconnect_sink_error_unattached_or_undrained_buffer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     bad_states = [
-        {"connected": False, "connection_lost": False, "event_sink_failed": False, "buffered_event_count": 0},
-        {"connected": True, "connection_lost": True, "event_sink_failed": False, "buffered_event_count": 0},
-        {"connected": True, "connection_lost": False, "event_sink_failed": True, "buffered_event_count": 0},
-        {"connected": True, "connection_lost": False, "event_sink_failed": False, "buffered_event_count": 1},
+        {
+            "connected": False,
+            "connection_lost": False,
+            "event_sink_attached": True,
+            "event_sink_failed": False,
+            "buffered_event_count": 0,
+        },
+        {
+            "connected": True,
+            "connection_lost": True,
+            "event_sink_attached": True,
+            "event_sink_failed": False,
+            "buffered_event_count": 0,
+        },
+        {
+            "connected": True,
+            "connection_lost": False,
+            "event_sink_attached": False,
+            "event_sink_failed": False,
+            "buffered_event_count": 0,
+        },
+        {
+            "connected": True,
+            "connection_lost": False,
+            "event_sink_attached": True,
+            "event_sink_failed": True,
+            "buffered_event_count": 0,
+        },
+        {
+            "connected": True,
+            "connection_lost": False,
+            "event_sink_attached": True,
+            "event_sink_failed": False,
+            "buffered_event_count": 1,
+        },
     ]
     for index, state in enumerate(bad_states):
         case = tmp_path / str(index)
