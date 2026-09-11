@@ -127,22 +127,47 @@ def assert_strict_research_metrics(metrics: Mapping[str, object], label: str) ->
             raise RuntimeError(f"{label} has {key}={value}; refusing research result")
 
 
-def stitch_fold_equity(parts: list[pd.Series]) -> pd.Series:
-    """Chain independent fold equity curves without double-counting fold boundaries."""
+def stitch_fold_equity(
+    parts: list[pd.Series],
+    *,
+    initial_value: float | None = None,
+) -> pd.Series:
+    """Chain independent fold equity curves without dropping valid boundary sessions.
+
+    ``initial_value`` should be the pre-trade NAV used to start each independent fold.
+    Supplying it preserves each fold's first-session return. Without it, the historical
+    first-row-normalization behavior is retained, but valid first dates are no longer
+    unconditionally discarded.
+    """
     stitched: list[pd.Series] = []
     chained = 1.0
+    first_date: pd.Timestamp | None = None
+    base = float(initial_value) if initial_value is not None else None
+    if base is not None and base <= 0.0:
+        raise ValueError("initial_value must be positive")
+
     for equity in parts:
         clean = equity.dropna().sort_index()
         if clean.empty:
             continue
-        normalized = clean / float(clean.iloc[0]) * chained
-        if stitched:
-            normalized = normalized.iloc[1:]
+        if first_date is None:
+            first_date = pd.Timestamp(clean.index[0])
+        denominator = base if base is not None else float(clean.iloc[0])
+        if denominator <= 0.0:
+            raise ValueError("fold equity baseline must be positive")
+        normalized = clean / denominator * chained
         if normalized.empty:
             continue
         stitched.append(normalized)
         chained = float(normalized.iloc[-1])
+
     if not stitched:
         return pd.Series(dtype=float)
+
     out = pd.concat(stitched).sort_index()
-    return out[~out.index.duplicated(keep="last")]
+    out = out[~out.index.duplicated(keep="last")]
+    if base is not None and first_date is not None:
+        baseline_index = first_date - pd.Timedelta(nanoseconds=1)
+        baseline = pd.Series([1.0], index=pd.DatetimeIndex([baseline_index]))
+        out = pd.concat([baseline, out]).sort_index()
+    return out
