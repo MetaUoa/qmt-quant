@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import json
 from pathlib import Path
 import re
 from typing import Mapping
 from zoneinfo import ZoneInfo
-from datetime import datetime
 
 import pandas as pd
 
+from .acceptance_lineage import ACCEPTANCE_SCHEMA, validate_acceptance_lineage
+
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_ACCEPTANCE_SCHEMA = "qmt-acceptance-v2"
-_ACCEPTANCE_EVIDENCE_KEYS = ("backtest", "walk_forward", "folds", "stress")
 
 
 @dataclass(frozen=True)
@@ -23,12 +22,32 @@ class ValidatedTargets:
     frame: pd.DataFrame
     diagnostics: dict
     signal_date: date
+    expected_execution_session: date
+    expires_after_session: date
     strategy_sha256: str
     target_file_sha256: str
 
 
 def china_market_date() -> date:
     return datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+
+def next_trading_session(calendar: pd.DatetimeIndex, signal_date: date | str | pd.Timestamp) -> date:
+    sessions = pd.DatetimeIndex(calendar).normalize().drop_duplicates().sort_values()
+    signal = pd.Timestamp(signal_date).normalize()
+    index = int(sessions.searchsorted(signal, side="right"))
+    if index >= len(sessions):
+        raise RuntimeError(f"no trading session exists after signal_date={signal.date()}")
+    return pd.Timestamp(sessions[index]).date()
+
+
+def _required_date(value: object, *, name: str) -> date:
+    if value is None or str(value).strip() == "":
+        raise RuntimeError(f"signal diagnostics missing {name}")
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        raise RuntimeError(f"signal diagnostics contain invalid {name}")
+    return pd.Timestamp(timestamp).normalize().date()
 
 
 def validate_target_bundle(
@@ -57,27 +76,45 @@ def validate_target_bundle(
     if codes.duplicated().any():
         raise ValueError("target file contains duplicate codes")
     weights = pd.to_numeric(frame["target_weight"], errors="coerce")
-    if weights.isna().any() or (weights < 0.0).any() or (weights > 1.0).any():
+    if weights.isna().any() or (~weights.map(lambda value: bool(pd.notna(value)))).any():
         raise ValueError("target weights must be finite values in [0, 1]")
-    if len(frame) and float(weights.sum()) > 1.000001:
+    numeric_weights = weights.astype(float)
+    if (~numeric_weights.map(lambda value: bool(pd.api.types.is_number(value)))).any():
+        raise ValueError("target weights must be numeric")
+    if (~numeric_weights.map(lambda value: float(value) == float(value))).any():
+        raise ValueError("target weights must be finite values in [0, 1]")
+    if (numeric_weights < 0.0).any() or (numeric_weights > 1.0).any():
+        raise ValueError("target weights must be finite values in [0, 1]")
+    if len(frame) and float(numeric_weights.sum()) > 1.000001:
         raise ValueError("target weights exceed 100% gross exposure")
 
     diagnostics = json.loads(diagnostics_file.read_text(encoding="utf-8"))
     if not isinstance(diagnostics, Mapping):
         raise ValueError("signal diagnostics must be a JSON object")
-    raw_signal_date = diagnostics.get("signal_date")
-    if not raw_signal_date:
-        raise RuntimeError("signal diagnostics missing signal_date")
-    signal_ts = pd.Timestamp(raw_signal_date).normalize()
-    if pd.isna(signal_ts):
-        raise RuntimeError("signal diagnostics contain invalid signal_date")
-    signal_date = signal_ts.date()
+    signal_date = _required_date(diagnostics.get("signal_date"), name="signal_date")
+    expected_execution_session = _required_date(
+        diagnostics.get("expected_execution_session", diagnostics.get("signal_date")),
+        name="expected_execution_session",
+    )
+    expires_after_session = _required_date(
+        diagnostics.get("expires_after_session", diagnostics.get("expected_execution_session", diagnostics.get("signal_date"))),
+        name="expires_after_session",
+    )
+    if expected_execution_session <= signal_date:
+        raise RuntimeError("expected_execution_session must be after signal_date")
+    if expires_after_session < expected_execution_session:
+        raise RuntimeError("expires_after_session must not precede expected_execution_session")
+
     market_date = china_market_date()
     if signal_date > market_date:
         raise RuntimeError(f"future signal_date {signal_date} is invalid for market date {market_date}")
-    if require_current_session and signal_date != market_date:
+    if require_current_session and not (
+        expected_execution_session <= market_date <= expires_after_session
+    ):
         raise RuntimeError(
-            f"stale live targets: signal_date={signal_date} market_date={market_date}"
+            "live targets are outside their execution window: "
+            f"signal_date={signal_date} expected_execution_session={expected_execution_session} "
+            f"expires_after_session={expires_after_session} market_date={market_date}"
         )
 
     selected_count = int(diagnostics.get("selected_count", len(frame)))
@@ -93,15 +130,26 @@ def validate_target_bundle(
         strategy_sha256 = str(source.get("sha256", ""))
         if not _SHA256_RE.fullmatch(strategy_sha256):
             raise RuntimeError("live targets require a valid strategy SHA256 fingerprint")
-        for column in ("signal_date", "strategy_sha256"):
+        for column in (
+            "signal_date",
+            "expected_execution_session",
+            "expires_after_session",
+            "strategy_sha256",
+        ):
             if column not in frame.columns:
                 raise RuntimeError(f"live target CSV requires {column} column")
         csv_shas = sorted(set(frame["strategy_sha256"].dropna().astype(str)))
         if csv_shas != [strategy_sha256]:
             raise RuntimeError("target CSV strategy SHA256 does not match signal diagnostics")
-        csv_dates = pd.to_datetime(frame["signal_date"], errors="coerce").dt.normalize()
-        if csv_dates.isna().any() or not csv_dates.eq(signal_ts).all():
-            raise RuntimeError("target CSV signal_date does not match signal diagnostics")
+        date_columns = {
+            "signal_date": signal_date,
+            "expected_execution_session": expected_execution_session,
+            "expires_after_session": expires_after_session,
+        }
+        for column, expected_date in date_columns.items():
+            csv_dates = pd.to_datetime(frame[column], errors="coerce").dt.normalize()
+            if csv_dates.isna().any() or not csv_dates.eq(pd.Timestamp(expected_date)).all():
+                raise RuntimeError(f"target CSV {column} does not match signal diagnostics")
     else:
         strategy_sha256 = str(source.get("sha256", "")) if isinstance(source, Mapping) else ""
 
@@ -109,6 +157,8 @@ def validate_target_bundle(
         frame=frame,
         diagnostics=dict(diagnostics),
         signal_date=signal_date,
+        expected_execution_session=expected_execution_session,
+        expires_after_session=expires_after_session,
         strategy_sha256=strategy_sha256,
         target_file_sha256=target_file_sha256,
     )
@@ -121,15 +171,21 @@ def validate_acceptance_for_strategy(path: str | Path, minimum: str, strategy_sh
     report = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(report, Mapping):
         raise RuntimeError("acceptance report must be a JSON object")
-    if str(report.get("schema", "")) != _ACCEPTANCE_SCHEMA:
-        raise RuntimeError(f"live acceptance requires schema {_ACCEPTANCE_SCHEMA}")
-    evidence_hashes = report.get("evidence_sha256")
-    if not isinstance(evidence_hashes, Mapping):
-        raise RuntimeError("live acceptance requires immutable evidence SHA256 metadata")
-    for key in _ACCEPTANCE_EVIDENCE_KEYS:
-        value = str(evidence_hashes.get(key, ""))
-        if not _SHA256_RE.fullmatch(value):
-            raise RuntimeError(f"live acceptance missing valid evidence SHA256 for {key}")
+    if str(report.get("schema", "")) != ACCEPTANCE_SCHEMA:
+        raise RuntimeError(f"live acceptance requires schema {ACCEPTANCE_SCHEMA}")
+
+    lineage = report.get("lineage")
+    if not isinstance(lineage, Mapping):
+        raise RuntimeError("live acceptance requires content-addressed lineage binding")
+    validated_lineage = validate_acceptance_lineage(
+        lineage,
+        strategy_sha256=strategy_sha256,
+    )
+    top_level_evidence = report.get("evidence_sha256")
+    if not isinstance(top_level_evidence, Mapping):
+        raise RuntimeError("live acceptance requires evidence SHA256 metadata")
+    if {str(k): str(v) for k, v in top_level_evidence.items()} != validated_lineage["evidence_sha256"]:
+        raise RuntimeError("acceptance evidence SHA256 does not match lineage binding")
 
     rank = {"REJECT": 0, "C": 1, "B": 2, "A": 3}
     grade = str(report.get("grade", "REJECT"))
