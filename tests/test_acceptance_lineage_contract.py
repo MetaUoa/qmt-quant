@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import sys
 
@@ -25,6 +26,12 @@ def test_acceptance_requires_exact_lowercase_sha256():
         run_acceptance._require_strategy_sha("G" * 64)
 
 
+def test_acceptance_hashes_evidence_file_bytes(tmp_path):
+    evidence = tmp_path / "evidence.json"
+    evidence.write_bytes(b'{"value":1}\n')
+    assert run_acceptance._sha256_path(evidence) == hashlib.sha256(evidence.read_bytes()).hexdigest()
+
+
 def test_acceptance_source_has_no_v3_implicit_path():
     source = Path(run_acceptance.__file__).read_text(encoding="utf-8")
     assert "output/v3_research" not in source
@@ -33,6 +40,7 @@ def test_acceptance_source_has_no_v3_implicit_path():
     assert 'p.add_argument("--folds", required=True)' in source
     assert 'p.add_argument("--stress", required=True)' in source
     assert 'p.add_argument("--strategy-sha256", required=True)' in source
+    assert 'report["evidence_sha256"]' in source
 
 
 def test_legacy_acceptance_batch_is_fail_closed():
