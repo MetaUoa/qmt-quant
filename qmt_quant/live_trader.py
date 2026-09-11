@@ -248,11 +248,14 @@ class QmtBroker:
 
     def snapshot(self) -> tuple[float, float, dict[str, PositionSnapshot]]:
         self._require_connection_healthy()
-        asset = self.trader.query_stock_asset(self.account)
+        trader = self.trader
+        if trader is None:
+            raise RuntimeError("Broker is not connected")
+        asset = trader.query_stock_asset(self.account)
         if asset is None:
             raise BrokerStateUnknown("query_stock_asset returned None; broker state is unknown")
         position_rows = _require_rows(
-            self.trader.query_stock_positions(self.account),
+            trader.query_stock_positions(self.account),
             "query_stock_positions",
         )
         mapped: dict[str, PositionSnapshot] = {}
@@ -316,8 +319,11 @@ class QmtBroker:
 
     def query_orders(self, *, cancelable_only: bool = False) -> list[dict]:
         self._require_connection_healthy()
+        trader = self.trader
+        if trader is None:
+            raise RuntimeError("Broker is not connected")
         rows = _require_rows(
-            self.trader.query_stock_orders(self.account, bool(cancelable_only)),
+            trader.query_stock_orders(self.account, bool(cancelable_only)),
             "query_stock_orders",
         )
         out: list[dict] = []
@@ -341,8 +347,11 @@ class QmtBroker:
 
     def query_trades(self) -> list[dict]:
         self._require_connection_healthy()
+        trader = self.trader
+        if trader is None:
+            raise RuntimeError("Broker is not connected")
         rows = _require_rows(
-            self.trader.query_stock_trades(self.account),
+            trader.query_stock_trades(self.account),
             "query_stock_trades",
         )
         out: list[dict] = []
@@ -405,6 +414,9 @@ class QmtBroker:
         on_freshness: Callable[[dict[str, object]], None] | None = None,
     ) -> list[dict]:
         self._require_connection_healthy()
+        trader = self.trader
+        if trader is None:
+            raise RuntimeError("Broker is not connected")
         from xtquant import xtconstant
 
         active_cost = cost or CostConfig()
@@ -484,7 +496,7 @@ class QmtBroker:
             estimated_commission = 0.0
             estimated_fees: dict[str, object] | None = None
             if item.side == "BUY":
-                asset_now = self.trader.query_stock_asset(self.account)
+                asset_now = trader.query_stock_asset(self.account)
                 if asset_now is None:
                     raise BrokerStateUnknown(
                         "query_stock_asset returned None during BUY cash check; submission stopped"
@@ -544,7 +556,7 @@ class QmtBroker:
             )
             self._require_connection_healthy()
             try:
-                order_id = self.trader.order_stock(
+                order_id = trader.order_stock(
                     self.account,
                     item.code,
                     order_type,
