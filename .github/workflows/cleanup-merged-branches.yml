@@ -1,0 +1,126 @@
+name: cleanup-merged-branches-once
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/cleanup-merged-branches.yml
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete redundant remote branches safely
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: main
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          default_branch = os.environ.get("DEFAULT_BRANCH", "main")
+          api = "https://api.github.com"
+
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "qmt-quant-branch-cleanup",
+          }
+
+          def request(method, path):
+              req = urllib.request.Request(api + path, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      body = response.read()
+                      return json.loads(body) if body else None
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode("utf-8", "replace")
+                  raise RuntimeError(f"{method} {path} -> HTTP {exc.code}: {detail}") from exc
+
+          def paged(path):
+              page = 1
+              items = []
+              sep = "&" if "?" in path else "?"
+              while True:
+                  batch = request("GET", f"{path}{sep}per_page=100&page={page}") or []
+                  items.extend(batch)
+                  if len(batch) < 100:
+                      return items
+                  page += 1
+
+          open_prs = paged(f"/repos/{repo}/pulls?state=open")
+          closed_prs = paged(f"/repos/{repo}/pulls?state=closed")
+          branches = paged(f"/repos/{repo}/branches?")
+
+          open_heads = {pr["head"]["ref"] for pr in open_prs if pr.get("head")}
+          merged_heads = {
+              (pr["head"]["ref"], pr["head"]["sha"])
+              for pr in closed_prs
+              if pr.get("merged_at") and pr.get("head")
+          }
+
+          deleted = []
+          kept = []
+
+          for branch in branches:
+              name = branch["name"]
+              sha = branch["commit"]["sha"]
+
+              if name == default_branch:
+                  kept.append((name, "default"))
+                  continue
+              if name in open_heads:
+                  kept.append((name, "open-pr"))
+                  continue
+
+              safe = (name, sha) in merged_heads
+              reason = "merged-pr-head" if safe else ""
+
+              if not safe:
+                  base = urllib.parse.quote(default_branch, safe="")
+                  head = urllib.parse.quote(name, safe="")
+                  try:
+                      cmp = request("GET", f"/repos/{repo}/compare/{base}...{head}")
+                  except RuntimeError as exc:
+                      kept.append((name, f"compare-failed: {exc}"))
+                      continue
+                  if cmp and int(cmp.get("ahead_by", 1)) == 0:
+                      safe = True
+                      reason = "no-commits-ahead-of-main"
+
+              if not safe:
+                  kept.append((name, "unmerged-or-diverged"))
+                  continue
+
+              ref = urllib.parse.quote(f"heads/{name}", safe="/")
+              try:
+                  request("DELETE", f"/repos/{repo}/git/refs/{ref}")
+                  deleted.append((name, reason))
+                  print(f"DELETED {name} [{reason}]")
+              except RuntimeError as exc:
+                  kept.append((name, f"delete-failed: {exc}"))
+                  print(f"KEEP {name} [delete failed]", file=sys.stderr)
+              time.sleep(0.05)
+
+          print("\n=== SUMMARY ===")
+          print(f"deleted={len(deleted)}")
+          print(f"kept={len(kept)}")
+          print("\nRemaining/kept branches:")
+          for name, reason in kept:
+              print(f"KEEP {name} [{reason}]")
+          PY
