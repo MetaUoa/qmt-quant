@@ -37,7 +37,9 @@ jobs:
         run: >-
           python -m mypy
           qmt_quant/production_candidate.py
+          qmt_quant/acceptance_lineage.py
           qmt_quant/live_safety.py
+          qmt_quant/live_trader.py
           qmt_quant/target_planning.py
           qmt_quant/execution_state.py
           qmt_quant/v5_gates.py
@@ -60,6 +62,8 @@ jobs:
           qmt_quant/composites.py
           qmt_quant/neutralization_diagnostics.py
           qmt_quant/v5_selector.py
+          generate_live_targets.py
+          run_acceptance.py
           run_v5_c9_neutralization_diagnostics.py
           run_qmt_executor.py
           risk/pretrade.py
