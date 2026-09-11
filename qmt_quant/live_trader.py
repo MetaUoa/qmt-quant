@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 import time
 from typing import Callable, Iterable
+
+
+class BrokerStateUnknown(RuntimeError):
+    """Raised when MiniQMT cannot distinguish an empty state from a query failure."""
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,18 @@ def serialize_plan(plan: list[OrderInstruction]) -> list[dict]:
     return [asdict(item) for item in plan]
 
 
+def _require_rows(rows: object, query_name: str) -> list:
+    # XtQuant documents None for position/order/trade queries as either query failure
+    # or an empty result. Production execution cannot safely tell those cases apart,
+    # so ambiguity is a hard stop rather than an inferred empty account state.
+    if rows is None:
+        raise BrokerStateUnknown(f"{query_name} returned None; broker state is ambiguous")
+    try:
+        return list(rows)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise BrokerStateUnknown(f"{query_name} returned a non-iterable result") from exc
+
+
 class QmtBroker:
     """Thin MiniQMT execution adapter.
 
@@ -120,11 +137,16 @@ class QmtBroker:
             raise RuntimeError("Broker is not connected")
         asset = self.trader.query_stock_asset(self.account)
         if asset is None:
-            raise RuntimeError("query_stock_asset returned None")
-        positions = self.trader.query_stock_positions(self.account) or []
+            raise BrokerStateUnknown("query_stock_asset returned None; broker state is unknown")
+        position_rows = _require_rows(
+            self.trader.query_stock_positions(self.account),
+            "query_stock_positions",
+        )
         mapped: dict[str, PositionSnapshot] = {}
-        for p in positions:
-            code = str(getattr(p, "stock_code"))
+        for p in position_rows:
+            code = str(getattr(p, "stock_code", "")).strip()
+            if not code:
+                raise BrokerStateUnknown("query_stock_positions returned a row without stock_code")
             mapped[code] = PositionSnapshot(
                 code=code,
                 volume=int(getattr(p, "volume", 0)),
@@ -132,11 +154,14 @@ class QmtBroker:
                 market_value=float(getattr(p, "market_value", 0.0)),
             )
         total_asset = float(getattr(asset, "total_asset", 0.0))
+        if not math.isfinite(total_asset):
+            raise BrokerStateUnknown("query_stock_asset returned non-finite total_asset")
         if total_asset <= 0:
-            total_asset = float(getattr(asset, "balance", 0.0) or getattr(asset, "cash", 0.0)) + sum(
-                p.market_value for p in mapped.values()
-            )
+            balance = float(getattr(asset, "balance", 0.0) or getattr(asset, "cash", 0.0))
+            total_asset = balance + sum(p.market_value for p in mapped.values())
         cash = float(getattr(asset, "cash", 0.0))
+        if not math.isfinite(total_asset) or total_asset <= 0 or not math.isfinite(cash) or cash < 0:
+            raise BrokerStateUnknown("query_stock_asset returned an invalid account valuation")
         return total_asset, cash, mapped
 
     @staticmethod
@@ -174,7 +199,10 @@ class QmtBroker:
     def query_orders(self, *, cancelable_only: bool = False) -> list[dict]:
         if self.trader is None or self.account is None:
             raise RuntimeError("Broker is not connected")
-        rows = self.trader.query_stock_orders(self.account, bool(cancelable_only)) or []
+        rows = _require_rows(
+            self.trader.query_stock_orders(self.account, bool(cancelable_only)),
+            "query_stock_orders",
+        )
         out: list[dict] = []
         for row in rows:
             order_id = int(getattr(row, "order_id", 0) or 0)
@@ -188,6 +216,26 @@ class QmtBroker:
                     "traded_volume": traded_volume,
                     "remaining_volume": max(order_volume - traded_volume, 0),
                     "order_status": int(getattr(row, "order_status", -1) or -1),
+                }
+            )
+        return out
+
+    def query_trades(self) -> list[dict]:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("Broker is not connected")
+        rows = _require_rows(
+            self.trader.query_stock_trades(self.account),
+            "query_stock_trades",
+        )
+        out: list[dict] = []
+        for row in rows:
+            out.append(
+                {
+                    "order_id": int(getattr(row, "order_id", 0) or 0),
+                    "code": str(getattr(row, "stock_code", "")),
+                    "traded_volume": int(getattr(row, "traded_volume", 0) or 0),
+                    "traded_price": float(getattr(row, "traded_price", 0.0) or 0.0),
+                    "traded_id": str(getattr(row, "traded_id", "") or ""),
                 }
             )
         return out
@@ -268,7 +316,13 @@ class QmtBroker:
             shares = int(item.shares)
             if item.side == "BUY":
                 asset_now = self.trader.query_stock_asset(self.account)
-                cash_now = float(getattr(asset_now, "cash", 0.0)) if asset_now is not None else 0.0
+                if asset_now is None:
+                    raise BrokerStateUnknown(
+                        "query_stock_asset returned None during BUY cash check; submission stopped"
+                    )
+                cash_now = float(getattr(asset_now, "cash", 0.0))
+                if not math.isfinite(cash_now) or cash_now < 0:
+                    raise BrokerStateUnknown("query_stock_asset returned invalid cash during BUY check")
                 affordable = int(cash_now // max(price * 100, 1e-12)) * 100
                 shares = min(shares, affordable)
                 if shares < 100:
