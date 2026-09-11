@@ -137,6 +137,28 @@ def test_unresolved_submit_attempt_remains_fail_closed() -> None:
     assert any("unresolved_submit_side_effect" in item for item in report["violations"])
 
 
+def test_submitted_result_without_attempt_blocks_recovery() -> None:
+    remark = f"qmtq:{BATCH[:12]}:S:0"
+    report = assess_execution_recovery(
+        batch_marker=_batch(),
+        account_lock=_lock(),
+        journal_records=[
+            {
+                "batch_id": BATCH,
+                "event": "RESULT",
+                "order_remark": remark,
+                "status": "SUBMITTED",
+                "order_id": 12,
+            }
+        ],
+        all_orders=[_order(12, remark)],
+        cancelable_orders=[],
+        trades=[],
+    )
+    assert report["safe_to_acknowledge"] is False
+    assert any("submit_result_without_attempt" in item for item in report["violations"])
+
+
 def test_unjournaled_batch_tagged_order_blocks_recovery() -> None:
     remark = f"qmtq:{BATCH[:12]}:B:3"
     report = assess_execution_recovery(
