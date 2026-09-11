@@ -1,27 +1,32 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
-import re
 
 import pandas as pd
 
 from qmt_quant.acceptance import grade_strategy
-
-
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-ACCEPTANCE_SCHEMA = "qmt-acceptance-v2"
+from qmt_quant.acceptance_lineage import (
+    ACCEPTANCE_SCHEMA,
+    build_acceptance_lineage,
+    require_sha256,
+    sha256_path,
+)
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Explicit-lineage strategy acceptance grading")
+    p = argparse.ArgumentParser(description="Content-addressed strategy acceptance grading")
     p.add_argument("--backtest", required=True)
     p.add_argument("--walk-forward", required=True)
     p.add_argument("--folds", required=True)
     p.add_argument("--stress", required=True)
     p.add_argument("--strategy-sha256", required=True)
+    p.add_argument("--strategy-source", required=True)
+    p.add_argument("--config", required=True)
+    p.add_argument("--data-lineage", required=True)
+    p.add_argument("--engine-manifest", required=True)
+    p.add_argument("--dependency-lock", required=True)
     p.add_argument("--output", default="output/v5_acceptance")
     p.add_argument("--require-grade", choices=["A", "B", "C"], default="C")
     return p.parse_args()
@@ -38,21 +43,11 @@ def _load_json(path: str) -> dict:
 
 
 def _sha256_path(path: str | Path) -> str:
-    source = Path(path)
-    if not source.exists() or not source.is_file():
-        raise FileNotFoundError(source)
-    digest = hashlib.sha256()
-    with source.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_path(path)
 
 
 def _require_strategy_sha(value: str) -> str:
-    sha = str(value).strip().lower()
-    if not _SHA256_RE.fullmatch(sha):
-        raise ValueError("--strategy-sha256 must be an exact lowercase 64-hex SHA256")
-    return sha
+    return require_sha256(value, name="--strategy-sha256")
 
 
 def main() -> int:
@@ -65,19 +60,33 @@ def main() -> int:
     if not folds_path.exists():
         raise FileNotFoundError(folds_path)
     folds = pd.read_csv(folds_path)
-    report = grade_strategy(backtest, oos, folds, stress)
-    report["schema"] = ACCEPTANCE_SCHEMA
-    report["strategy_sha256"] = strategy_sha256
+
     evidence_paths = {
         "backtest": str(Path(args.backtest)),
         "walk_forward": str(Path(args.walk_forward)),
         "folds": str(folds_path),
         "stress": str(Path(args.stress)),
     }
-    report["evidence"] = evidence_paths
-    report["evidence_sha256"] = {
-        name: _sha256_path(path) for name, path in evidence_paths.items()
+    lineage_paths = {
+        "strategy_source": str(Path(args.strategy_source)),
+        "config": str(Path(args.config)),
+        "data_lineage": str(Path(args.data_lineage)),
+        "engine_manifest": str(Path(args.engine_manifest)),
+        "dependency_lock": str(Path(args.dependency_lock)),
     }
+    lineage = build_acceptance_lineage(
+        strategy_sha256=strategy_sha256,
+        evidence_paths=evidence_paths,
+        artifact_paths=lineage_paths,
+    )
+
+    report = grade_strategy(backtest, oos, folds, stress)
+    report["schema"] = ACCEPTANCE_SCHEMA
+    report["strategy_sha256"] = strategy_sha256
+    report["evidence"] = evidence_paths
+    report["lineage_artifacts"] = lineage_paths
+    report["lineage"] = lineage
+    report["evidence_sha256"] = lineage["evidence_sha256"]
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
