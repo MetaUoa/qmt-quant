@@ -8,10 +8,16 @@ from pathlib import Path
 
 import pandas as pd
 
+from qmt_quant.execution_state import (
+    execution_batch_id,
+    reserve_execution_batch,
+    update_execution_batch,
+)
 from qmt_quant.live_safety import validate_acceptance_for_strategy, validate_target_bundle
 from qmt_quant.live_trader import QmtBroker, serialize_plan
 from qmt_quant.target_planning import build_target_weight_plan
 from risk.pretrade import validate_pretrade
+from risk.runtime import RuntimeRiskPolicy, evaluate_runtime_risk
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +35,17 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="Optional downward scale applied to target weights; never renormalizes them upward",
+    )
+    p.add_argument(
+        "--start-of-day-equity",
+        type=float,
+        default=None,
+        help="Required for live runtime drawdown gating",
+    )
+    p.add_argument(
+        "--runtime-kill-switch",
+        action="store_true",
+        help="Fail the runtime risk gate before any live order submission",
     )
     p.add_argument("--output", default="output/live_execution")
     p.add_argument("--enable-live", action="store_true")
@@ -64,6 +81,8 @@ def main() -> int:
             raise RuntimeError("Live execution requires --confirm-live LIVE")
         if args.ignore_acceptance:
             raise RuntimeError("Live acceptance bypass is disabled")
+        if args.start_of_day_equity is None:
+            raise RuntimeError("Live execution requires --start-of-day-equity for runtime risk gating")
         validate_acceptance_for_strategy(
             args.acceptance,
             args.min_live_grade,
@@ -108,8 +127,23 @@ def main() -> int:
         target_weights=effective_target_weights,
     )
     (out / "pretrade_risk.json").write_text(json.dumps(risk_report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    runtime_report = None
+    if args.start_of_day_equity is not None:
+        runtime_report = evaluate_runtime_risk(
+            start_of_day_equity=args.start_of_day_equity,
+            current_equity=total_asset,
+            target_codes=target_codes,
+            policy=RuntimeRiskPolicy(kill_switch=bool(args.runtime_kill_switch)),
+        )
+        (out / "runtime_risk.json").write_text(
+            json.dumps(runtime_report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
     print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     print(json.dumps({"pretrade_risk": risk_report}, ensure_ascii=False, indent=2))
+    if runtime_report is not None:
+        print(json.dumps({"runtime_risk": runtime_report}, ensure_ascii=False, indent=2))
     print(pd.DataFrame(serialize_plan(plan)).to_string(index=False) if plan else "No orders required")
 
     if not args.enable_live:
@@ -117,19 +151,40 @@ def main() -> int:
         return 0
     if not risk_report["passed"]:
         raise RuntimeError(f"Pre-trade risk gate failed: {risk_report['violations']}")
+    if runtime_report is None or not runtime_report["passed"]:
+        violations = [] if runtime_report is None else runtime_report["violations"]
+        raise RuntimeError(f"Runtime risk gate failed: {violations}")
+
+    batch_id = execution_batch_id(
+        signal_date=str(bundle.signal_date),
+        strategy_sha256=bundle.strategy_sha256,
+        target_weights=effective_target_weights,
+    )
+    batch_marker = reserve_execution_batch(
+        out / "execution_batches",
+        batch_id=batch_id,
+        metadata={
+            "signal_date": str(bundle.signal_date),
+            "strategy_sha256": bundle.strategy_sha256,
+            "account_type": args.account_type,
+            "planned_order_count": len(plan),
+            "effective_target_weight_sum": float(sum(effective_target_weights.values())),
+        },
+    )
 
     journal = out / "order_journal.jsonl"
     _append_jsonl_fsync(
         journal,
         {
             "event": "EXECUTION_START",
+            "batch_id": batch_id,
             "signal_date": str(bundle.signal_date),
             "strategy_sha256": bundle.strategy_sha256,
             "planned_order_count": len(plan),
             "effective_target_weight_sum": float(sum(effective_target_weights.values())),
         },
     )
-    results = broker.submit_plan(plan, on_event=lambda event: _append_jsonl_fsync(journal, event))
+    results = broker.submit_plan(plan, on_event=lambda event: _append_jsonl_fsync(journal, {"batch_id": batch_id, **event}))
     pd.DataFrame(results).to_csv(out / "submitted_orders.csv", index=False, encoding="utf-8-sig")
     (out / "submitted_orders.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -148,14 +203,36 @@ def main() -> int:
     pd.DataFrame(reconciliation.get("orders", [])).to_csv(
         out / "order_reconciliation.csv", index=False, encoding="utf-8-sig"
     )
-    _append_jsonl_fsync(journal, {"event": "RECONCILIATION", **reconciliation})
+    _append_jsonl_fsync(journal, {"event": "RECONCILIATION", "batch_id": batch_id, **reconciliation})
 
     incomplete = [x for x in results if x.get("status") != "SUBMITTED"]
     print(json.dumps(results, ensure_ascii=False, indent=2))
     print(json.dumps({"reconciliation": reconciliation}, ensure_ascii=False, indent=2))
     if reconciliation.get("requires_manual_reconciliation"):
+        update_execution_batch(
+            batch_marker,
+            status="MANUAL_RECONCILIATION",
+            details={"reconciliation": reconciliation},
+        )
         return 4
-    return 3 if incomplete else 0
+    if incomplete:
+        update_execution_batch(
+            batch_marker,
+            status="INCOMPLETE",
+            details={"results": results},
+        )
+        return 3
+
+    update_execution_batch(
+        batch_marker,
+        status="COMPLETED",
+        details={"submitted_order_ids": submitted_ids},
+    )
+    _append_jsonl_fsync(
+        journal,
+        {"event": "EXECUTION_COMPLETE", "batch_id": batch_id},
+    )
+    return 0
 
 
 if __name__ == "__main__":
