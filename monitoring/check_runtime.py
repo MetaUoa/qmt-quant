@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import datetime, timezone
+import json
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
-import pandas as pd
+import re
 
 from monitoring.alerts import JsonlAlertSink, runtime_health_alert
+from qmt_quant.live_safety import (
+    china_market_date,
+    validate_acceptance_for_strategy,
+    validate_target_bundle,
+)
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,98 +29,87 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _market_date() -> str:
-    return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
-
-
 def main() -> int:
     args = parse_args()
-    checks: dict[str, object] = {}
-    acceptance: dict = {}
-    target_sha = ""
+    checks: dict[str, object] = {"market_date": str(china_market_date())}
 
-    acceptance_path = Path(args.acceptance)
-    if acceptance_path.exists():
-        acceptance = json.loads(acceptance_path.read_text(encoding="utf-8"))
-        checks["acceptance_grade"] = acceptance.get("grade")
-        checks["acceptance_ok"] = acceptance.get("grade") in {"A", "B", "C"}
+    bundle = None
+    try:
+        bundle = validate_target_bundle(
+            args.targets,
+            args.signal,
+            require_current_session=True,
+        )
+        checks["target_bundle_valid"] = True
+        checks["target_count"] = int(len(bundle.frame))
+        checks["target_weight_sum"] = float(bundle.frame["target_weight"].sum())
+        checks["signal_date"] = str(bundle.signal_date)
+        checks["expected_execution_session"] = str(bundle.expected_execution_session)
+        checks["expires_after_session"] = str(bundle.expires_after_session)
+        checks["strategy_sha256"] = bundle.strategy_sha256
+        checks["target_file_sha256"] = bundle.target_file_sha256
+    except Exception as exc:
+        checks["target_bundle_valid"] = False
+        checks["target_bundle_error"] = f"{type(exc).__name__}: {exc}"
+
+    if bundle is not None:
+        try:
+            acceptance = validate_acceptance_for_strategy(
+                args.acceptance,
+                "C",
+                bundle.strategy_sha256,
+            )
+            checks["acceptance_ok"] = True
+            checks["acceptance_grade"] = acceptance.get("grade")
+            checks["acceptance_schema"] = acceptance.get("schema")
+        except Exception as exc:
+            checks["acceptance_ok"] = False
+            checks["acceptance_error"] = f"{type(exc).__name__}: {exc}"
     else:
         checks["acceptance_ok"] = False
-        checks["acceptance_grade"] = None
-
-    target_path = Path(args.targets)
-    if target_path.exists():
-        targets = pd.read_csv(target_path)
-        checks["targets_present"] = True
-        checks["target_count"] = int(len(targets))
-        if "target_weight" in targets:
-            weights = pd.to_numeric(targets["target_weight"], errors="coerce")
-            checks["target_weight_sum"] = float(weights.fillna(0.0).sum())
-            checks["target_weights_valid"] = bool(
-                weights.notna().all()
-                and weights.between(0.0, 1.0).all()
-                and float(weights.sum()) <= 1.000001
-            )
-        else:
-            checks["target_weights_valid"] = False
-        if "strategy_sha256" in targets and len(targets):
-            shas = sorted(set(targets["strategy_sha256"].dropna().astype(str)))
-            checks["target_strategy_sha_unique"] = len(shas) == 1
-            target_sha = shas[0] if len(shas) == 1 else ""
-        else:
-            checks["target_strategy_sha_unique"] = False
-    else:
-        checks["targets_present"] = False
-        checks["target_count"] = 0
-        checks["target_weights_valid"] = False
-        checks["target_strategy_sha_unique"] = False
-
-    signal_path = Path(args.signal)
-    if signal_path.exists():
-        signal = json.loads(signal_path.read_text(encoding="utf-8"))
-        signal_date = signal.get("signal_date")
-        checks["signal_date"] = signal_date
-        checks["market_date"] = _market_date()
-        checks["signal_fresh"] = str(signal_date) == str(checks["market_date"])
-        checks["risk_on"] = signal.get("risk_on")
-        checks["signal_present"] = True
-        source = signal.get("strategy_source") or {}
-        signal_sha = str(source.get("sha256", "")) if isinstance(source, dict) else ""
-        checks["signal_target_sha_match"] = bool(signal_sha and target_sha and signal_sha == target_sha)
-    else:
-        checks["signal_present"] = False
-        checks["signal_fresh"] = False
-        checks["signal_target_sha_match"] = False
-
-    acceptance_sha = str(acceptance.get("strategy_sha256", ""))
-    checks["acceptance_target_sha_match"] = bool(
-        acceptance_sha and target_sha and acceptance_sha == target_sha
-    )
 
     execution_path = Path(args.execution)
     if execution_path.exists():
         risk = json.loads(execution_path.read_text(encoding="utf-8"))
-        checks["pretrade_risk_passed"] = bool(risk.get("passed"))
+        checks["pretrade_risk_passed"] = bool(risk.get("passed")) if isinstance(risk, dict) else False
     else:
         checks["pretrade_risk_passed"] = False
 
     runtime_path = Path(args.runtime_risk)
     if runtime_path.exists():
         runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
-        checks["runtime_risk_passed"] = bool(runtime.get("passed"))
+        checks["runtime_risk_present"] = isinstance(runtime, dict)
+        checks["runtime_risk_passed"] = bool(runtime.get("passed")) if isinstance(runtime, dict) else False
+        binding = runtime.get("binding") if isinstance(runtime, dict) else None
+        if bundle is not None and isinstance(binding, dict):
+            batch_id = str(binding.get("batch_id", ""))
+            account_key = str(binding.get("account_key", ""))
+            checks["runtime_binding_match"] = bool(
+                _SHA256_RE.fullmatch(batch_id)
+                and _SHA256_RE.fullmatch(account_key)
+                and str(binding.get("strategy_sha256", "")) == bundle.strategy_sha256
+                and str(binding.get("target_file_sha256", "")) == bundle.target_file_sha256
+                and str(binding.get("signal_date", "")) == str(bundle.signal_date)
+                and str(binding.get("expected_execution_session", ""))
+                == str(bundle.expected_execution_session)
+                and str(binding.get("expires_after_session", "")) == str(bundle.expires_after_session)
+            )
+            checks["runtime_batch_id"] = batch_id
+            checks["runtime_account_key"] = account_key
+        else:
+            checks["runtime_binding_match"] = False
     else:
-        checks["runtime_risk_passed"] = None
+        checks["runtime_risk_present"] = False
+        checks["runtime_risk_passed"] = False
+        checks["runtime_binding_match"] = False
 
     mandatory = (
+        "target_bundle_valid",
         "acceptance_ok",
-        "targets_present",
-        "target_weights_valid",
-        "target_strategy_sha_unique",
-        "signal_present",
-        "signal_fresh",
-        "signal_target_sha_match",
-        "acceptance_target_sha_match",
         "pretrade_risk_passed",
+        "runtime_risk_present",
+        "runtime_risk_passed",
+        "runtime_binding_match",
     )
     checks["passed"] = all(checks.get(key) is True for key in mandatory)
     payload = {

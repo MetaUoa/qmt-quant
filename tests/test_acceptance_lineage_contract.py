@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import sys
 
 import pytest
 
 import run_acceptance
+from qmt_quant.acceptance_lineage import build_acceptance_lineage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,14 +27,79 @@ def test_acceptance_requires_exact_lowercase_sha256():
         run_acceptance._require_strategy_sha("G" * 64)
 
 
-def test_acceptance_source_has_no_v3_implicit_path():
+def test_acceptance_hashes_evidence_file_bytes(tmp_path):
+    evidence = tmp_path / "evidence.json"
+    evidence.write_bytes(b'{"value":1}\n')
+    assert run_acceptance._sha256_path(evidence) == hashlib.sha256(evidence.read_bytes()).hexdigest()
+
+
+def test_acceptance_v3_binds_strategy_source_and_all_lineage_artifacts(tmp_path):
+    strategy_source = tmp_path / "strategy.json"
+    strategy_source.write_bytes(b"{}")
+    strategy_sha = hashlib.sha256(strategy_source.read_bytes()).hexdigest()
+
+    evidence_paths = {}
+    for key in ("backtest", "walk_forward", "folds", "stress"):
+        path = tmp_path / f"{key}.txt"
+        path.write_text(key, encoding="utf-8")
+        evidence_paths[key] = path
+
+    artifact_paths = {"strategy_source": strategy_source}
+    for key in ("config", "data_lineage", "engine_manifest", "dependency_lock"):
+        path = tmp_path / f"{key}.txt"
+        path.write_text(key, encoding="utf-8")
+        artifact_paths[key] = path
+
+    lineage = build_acceptance_lineage(
+        strategy_sha256=strategy_sha,
+        evidence_paths=evidence_paths,
+        artifact_paths=artifact_paths,
+    )
+    assert lineage["strategy_sha256"] == strategy_sha
+    assert len(lineage["evidence_sha256"]) == 4
+    assert len(lineage["artifact_sha256"]) == 5
+    assert len(lineage["binding_sha256"]) == 64
+
+
+def test_acceptance_v3_rejects_user_sha_not_derived_from_strategy_source(tmp_path):
+    strategy_source = tmp_path / "strategy.json"
+    strategy_source.write_bytes(b"{}")
+    evidence_paths = {}
+    for key in ("backtest", "walk_forward", "folds", "stress"):
+        path = tmp_path / f"{key}.txt"
+        path.write_text(key, encoding="utf-8")
+        evidence_paths[key] = path
+    artifact_paths = {"strategy_source": strategy_source}
+    for key in ("config", "data_lineage", "engine_manifest", "dependency_lock"):
+        path = tmp_path / f"{key}.txt"
+        path.write_text(key, encoding="utf-8")
+        artifact_paths[key] = path
+    with pytest.raises(RuntimeError, match="strategy source identity"):
+        build_acceptance_lineage(
+            strategy_sha256="a" * 64,
+            evidence_paths=evidence_paths,
+            artifact_paths=artifact_paths,
+        )
+
+
+def test_acceptance_source_requires_full_v3_lineage_inputs():
     source = Path(run_acceptance.__file__).read_text(encoding="utf-8")
     assert "output/v3_research" not in source
-    assert 'p.add_argument("--backtest", required=True)' in source
-    assert 'p.add_argument("--walk-forward", required=True)' in source
-    assert 'p.add_argument("--folds", required=True)' in source
-    assert 'p.add_argument("--stress", required=True)' in source
-    assert 'p.add_argument("--strategy-sha256", required=True)' in source
+    for arg in (
+        "--backtest",
+        "--walk-forward",
+        "--folds",
+        "--stress",
+        "--strategy-sha256",
+        "--strategy-source",
+        "--config",
+        "--data-lineage",
+        "--engine-manifest",
+        "--dependency-lock",
+    ):
+        assert f'p.add_argument("{arg}", required=True)' in source
+    assert 'report["lineage"]' in source
+    assert 'report["evidence_sha256"]' in source
 
 
 def test_legacy_acceptance_batch_is_fail_closed():

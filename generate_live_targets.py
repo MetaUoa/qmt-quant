@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from qmt_quant.live_safety import next_trading_session
 from qmt_quant.production_candidate import (
     load_legacy_strategy_config,
     load_production_candidate_bundle,
@@ -80,21 +81,39 @@ def main() -> int:
         raw_bars=raw,
         strict_st=True,
     )
+    signal_date = pd.Timestamp(signal_ts).normalize().date()
+    expected_execution_session = next_trading_session(ref.calendar, signal_date)
+    # Live target files are deliberately valid for one execution session only. A new
+    # target bundle must be generated for any later trading session.
+    expires_after_session = expected_execution_session
     weight = 1.0 / len(selected) if selected else 0.0
     frame = pd.DataFrame(
         {
-            "signal_date": [str(pd.Timestamp(signal_ts).date())] * len(selected),
+            "signal_date": [str(signal_date)] * len(selected),
+            "expected_execution_session": [str(expected_execution_session)] * len(selected),
+            "expires_after_session": [str(expires_after_session)] * len(selected),
             "strategy_source": [source.kind] * len(selected),
             "strategy_sha256": [source.sha256] * len(selected),
             "code": selected,
             "target_weight": [weight] * len(selected),
         },
-        columns=["signal_date", "strategy_source", "strategy_sha256", "code", "target_weight"],
+        columns=[
+            "signal_date",
+            "expected_execution_session",
+            "expires_after_session",
+            "strategy_source",
+            "strategy_sha256",
+            "code",
+            "target_weight",
+        ],
     )
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     frame.to_csv(out / "target_weights.csv", index=False, encoding="utf-8-sig")
     diagnostics["requested_as_of"] = str(asof.date())
+    diagnostics["signal_date"] = str(signal_date)
+    diagnostics["expected_execution_session"] = str(expected_execution_session)
+    diagnostics["expires_after_session"] = str(expires_after_session)
     diagnostics["strategy_source"] = strategy_source_manifest(source)
     diagnostics["target_weight_sum"] = float(frame["target_weight"].sum()) if len(frame) else 0.0
     (out / "signal_diagnostics.json").write_text(json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8")

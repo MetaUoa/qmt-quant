@@ -54,10 +54,17 @@ def install_v5_c_contracts(module: ModuleType) -> None:
             context="C research",
         )
 
+    def _stitch_fold_equity(parts: list[pd.Series]) -> pd.Series:
+        cost_config = getattr(module, "CostConfig", None)
+        if cost_config is None:
+            raise RuntimeError("canonical V5-C runner is missing CostConfig")
+        initial_cash = float(cost_config().initial_cash)
+        return stitch_fold_equity(parts, initial_value=initial_cash)
+
     setattr(module, "_coverage_or_fail", _coverage_or_fail)
     setattr(module, "_eligible_mask", _eligible_mask)
     setattr(module, "_assert_strict_metrics", assert_strict_research_metrics)
-    setattr(module, "_stitch_fold_equity", stitch_fold_equity)
+    setattr(module, "_stitch_fold_equity", _stitch_fold_equity)
     setattr(module, "_basic_alpha_gate", evaluate_basic_alpha_gate)
 
 

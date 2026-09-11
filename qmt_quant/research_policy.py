@@ -50,16 +50,70 @@ class V5SelectionPolicy:
 
 
 DEFAULT_V5_SELECTION_POLICY = V5SelectionPolicy()
+MAX_PRE_HOLDOUT_END = "20251231"
+
+
+def cli_values(argv: list[str], name: str) -> list[str]:
+    """Return all values supplied for one long CLI option.
+
+    Both ``--name value`` and ``--name=value`` are accepted. Multiple occurrences
+    are retained so policy checks can reject argparse's otherwise silent last-value
+    wins behavior.
+    """
+    values: list[str] = []
+    prefix = f"{name}="
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == name:
+            if index + 1 >= len(argv):
+                raise RuntimeError(f"missing value for {name}")
+            values.append(argv[index + 1])
+            index += 2
+            continue
+        if token.startswith(prefix):
+            raw = token[len(prefix) :]
+            if raw == "":
+                raise RuntimeError(f"missing value for {name}")
+            values.append(raw)
+        index += 1
+    return values
 
 
 def cli_value(argv: list[str], name: str) -> str | None:
-    try:
-        index = argv.index(name)
-    except ValueError:
-        return None
-    if index + 1 >= len(argv):
-        raise RuntimeError(f"missing value for {name}")
-    return argv[index + 1]
+    values = cli_values(argv, name)
+    if len(values) > 1:
+        raise RuntimeError(f"duplicate {name} arguments are not allowed")
+    return values[0] if values else None
+
+
+def normalize_research_end(value: str, *, name: str = "--end") -> str:
+    normalized = str(value).strip().replace("-", "")
+    if not normalized.isdigit() or len(normalized) != 8:
+        raise RuntimeError(f"{name} must be YYYYMMDD or YYYY-MM-DD")
+    return normalized
+
+
+def assert_pre_holdout_end(
+    argv: list[str],
+    *,
+    name: str = "--end",
+    default: str = MAX_PRE_HOLDOUT_END,
+    context: str = "V5 research",
+) -> str:
+    """Fail closed if the effective research end can cross into the 2026 holdout."""
+    raw = cli_value(argv, name)
+    normalized = normalize_research_end(default if raw is None else raw, name=name)
+    if normalized > MAX_PRE_HOLDOUT_END:
+        raise RuntimeError(f"{context} is pre-2026 research only; holdout remains blinded")
+    return normalized
+
+
+def assert_pre_holdout_end_value(value: str, *, context: str = "V5 research") -> str:
+    normalized = normalize_research_end(value)
+    if normalized > MAX_PRE_HOLDOUT_END:
+        raise RuntimeError(f"{context} is pre-2026 research only; holdout remains blinded")
+    return normalized
 
 
 def assert_float_floor_value(value: float, name: str, *, minimum: float) -> float:

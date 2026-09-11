@@ -18,6 +18,8 @@ from qmt_quant.research_policy import (
     DEFAULT_RESEARCH_DATA_POLICY,
     assert_cli_float_floor,
     assert_cli_int_floor,
+    assert_pre_holdout_end,
+    cli_value,
 )
 from qmt_quant.research_runtime import install_v5_c_contracts
 
@@ -34,7 +36,6 @@ class _C1Surface(Protocol):
 _c1_module = importlib.import_module("run_v5_c_nested_research")
 c1 = cast(_C1Surface, _c1_module)
 
-_MAX_RESEARCH_END = "20251231"
 _OriginalVariantObservations = c1._variant_observations
 _OriginalPurgeNestedFold = c1.purge_nested_fold
 _C1_CONTRACT_HOOK_NAMES = (
@@ -61,21 +62,11 @@ class _C9DiagnosticsReady(Exception):
 
 
 def _arg_value(argv: list[str], name: str) -> str | None:
-    try:
-        index = argv.index(name)
-    except ValueError:
-        return None
-    if index + 1 >= len(argv):
-        raise RuntimeError(f"missing value for {name}")
-    return argv[index + 1]
+    return cli_value(argv, name)
 
 
 def _assert_pre_2026_only(argv: list[str]) -> None:
-    end = (_arg_value(argv, "--end") or _MAX_RESEARCH_END).replace("-", "")
-    if not end.isdigit() or len(end) != 8:
-        raise RuntimeError("C9 research end must be YYYYMMDD or YYYY-MM-DD")
-    if end > _MAX_RESEARCH_END:
-        raise RuntimeError("C9 is pre-2026 research only; holdout remains blinded")
+    assert_pre_holdout_end(argv, context="C9 research")
 
 
 def _assert_data_policy(argv: list[str]) -> None:
@@ -219,11 +210,13 @@ def _build_fold_safe_diagnostics(output: Path) -> dict[str, Any]:
     return payload
 
 
-def _remove_forbidden_stale_outputs(output: Path) -> None:
-    for name in _FORBIDDEN_C1_OUTPUTS:
-        path = output / name
-        if path.exists():
-            path.unlink()
+def _assert_output_namespace_safe(output: Path) -> None:
+    conflicts = [name for name in _FORBIDDEN_C1_OUTPUTS if (output / name).exists()]
+    if conflicts:
+        raise RuntimeError(
+            "C9 diagnostics refuse to delete or overwrite C1 selection artifacts; "
+            "use a dedicated output directory. Conflicts: " + ", ".join(conflicts)
+        )
 
 
 def _assert_no_forbidden_c1_outputs(output: Path) -> None:
@@ -238,7 +231,7 @@ def main() -> int:
     _assert_data_policy(argv)
     output = Path(_arg_value(argv, "--output") or "output/v5_c_nested")
     output.mkdir(parents=True, exist_ok=True)
-    _remove_forbidden_stale_outputs(output)
+    _assert_output_namespace_safe(output)
     _CAPTURED.clear()
     _CAPTURED_FOLDS.clear()
 

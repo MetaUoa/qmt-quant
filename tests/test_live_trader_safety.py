@@ -3,7 +3,9 @@ from __future__ import annotations
 from types import ModuleType, SimpleNamespace
 import sys
 
-from qmt_quant.live_trader import OrderInstruction, QmtBroker
+import pytest
+
+from qmt_quant.live_trader import BrokerStateUnknown, OrderInstruction, QmtBroker
 
 
 def _bare_broker():
@@ -47,6 +49,30 @@ def test_connect_retries_with_fresh_trader_instances():
     assert broker.trader is attempts[1]
 
 
+def test_snapshot_rejects_ambiguous_none_positions():
+    broker = _bare_broker()
+    broker.trader = SimpleNamespace(
+        query_stock_asset=lambda _account: SimpleNamespace(total_asset=1000.0, cash=1000.0),
+        query_stock_positions=lambda _account: None,
+    )
+    broker.account = object()
+    with pytest.raises(BrokerStateUnknown, match="query_stock_positions returned None"):
+        broker.snapshot()
+
+
+def test_order_and_trade_queries_reject_ambiguous_none():
+    broker = _bare_broker()
+    broker.trader = SimpleNamespace(
+        query_stock_orders=lambda _account, _cancelable: None,
+        query_stock_trades=lambda _account: None,
+    )
+    broker.account = object()
+    with pytest.raises(BrokerStateUnknown, match="query_stock_orders returned None"):
+        broker.query_orders()
+    with pytest.raises(BrokerStateUnknown, match="query_stock_trades returned None"):
+        broker.query_trades()
+
+
 def test_submit_exception_is_journaled_and_stops_batch(monkeypatch):
     xtquant = ModuleType("xtquant")
     xtquant.xtconstant = SimpleNamespace(STOCK_BUY=23, STOCK_SELL=24, FIX_PRICE=11)
@@ -76,6 +102,40 @@ def test_submit_exception_is_journaled_and_stops_batch(monkeypatch):
     assert len(results) == 1
     assert results[0]["status"] == "SUBMIT_EXCEPTION"
     assert [row["event"] for row in events] == ["INTENT", "SUBMIT_ATTEMPT", "RESULT"]
+
+
+def test_buy_cash_recheck_rejects_unknown_asset_before_order_submission(monkeypatch):
+    xtquant = ModuleType("xtquant")
+    xtquant.xtconstant = SimpleNamespace(STOCK_BUY=23, STOCK_SELL=24, FIX_PRICE=11)
+    monkeypatch.setitem(sys.modules, "xtquant", xtquant)
+
+    class Trader:
+        def __init__(self):
+            self.order_calls = 0
+
+        def query_stock_asset(self, _account):
+            return None
+
+        def order_stock(self, *_args, **_kwargs):
+            self.order_calls += 1
+            return 7
+
+    trader = Trader()
+    broker = _bare_broker()
+    broker.trader = trader
+    broker.account = object()
+    broker.full_tick = lambda _codes: {
+        "000001.SZ": {
+            "lastPrice": 10.0,
+            "askPrice": [10.0],
+            "bidPrice": [10.0],
+            "lastClose": 9.9,
+        }
+    }
+    plan = [OrderInstruction("000001.SZ", "BUY", 100, 10.0, "increase")]
+    with pytest.raises(BrokerStateUnknown, match="during BUY cash check"):
+        broker.submit_plan(plan)
+    assert trader.order_calls == 0
 
 
 def test_reconcile_flags_partial_fill_for_manual_action():

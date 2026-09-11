@@ -141,9 +141,21 @@ def test_strict_metrics_include_missing_suspension_reference():
         assert_strict_research_metrics(dirty, "unit")
 
 
-def test_fold_equity_stitching_chains_without_duplicate_boundary():
+def test_fold_equity_stitching_keeps_non_overlapping_boundary_sessions():
     a = pd.Series([1.0, 1.1], index=pd.to_datetime(["2021-01-01", "2021-12-31"]))
     b = pd.Series([5.0, 6.0], index=pd.to_datetime(["2022-01-01", "2022-12-31"]))
     out = stitch_fold_equity([a, b])
-    assert list(out.index) == list(pd.to_datetime(["2021-01-01", "2021-12-31", "2022-12-31"]))
+    assert list(out.index) == list(
+        pd.to_datetime(["2021-01-01", "2021-12-31", "2022-01-01", "2022-12-31"])
+    )
     assert out.iloc[-1] == pytest.approx(1.32)
+
+
+def test_fold_equity_stitching_preserves_each_first_session_return_with_initial_nav():
+    a = pd.Series([9.0, 9.0], index=pd.to_datetime(["2021-01-04", "2021-12-31"]))
+    b = pd.Series([9.0, 9.0], index=pd.to_datetime(["2022-01-04", "2022-12-30"]))
+    out = stitch_fold_equity([a, b], initial_value=10.0)
+    assert out.iloc[0] == pytest.approx(1.0)
+    assert out.loc[pd.Timestamp("2021-01-04")] == pytest.approx(0.9)
+    assert out.loc[pd.Timestamp("2022-01-04")] == pytest.approx(0.81)
+    assert out.iloc[-1] == pytest.approx(0.81)
