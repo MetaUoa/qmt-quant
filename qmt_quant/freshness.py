@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 from typing import Mapping, Sequence
 
@@ -33,16 +33,31 @@ def _aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _finite_float(value: object, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise FreshnessError(f"{name} cannot be boolean")
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise FreshnessError(f"{name} is empty")
+        try:
+            number = float(text)
+        except ValueError as exc:
+            raise FreshnessError(f"{name} is not numeric") from exc
+    else:
+        raise FreshnessError(f"{name} is not numeric")
+    if not math.isfinite(number):
+        raise FreshnessError(f"{name} must be finite")
+    return number
+
+
 def _tick_timestamp(tick: Mapping[str, object]) -> datetime:
     raw = tick.get("time")
     if raw not in (None, ""):
-        if isinstance(raw, bool):
-            raise FreshnessError("tick time cannot be boolean")
-        try:
-            number = float(raw)
-        except (TypeError, ValueError) as exc:
-            raise FreshnessError("tick time is not numeric") from exc
-        if not math.isfinite(number) or number <= 0:
+        number = _finite_float(raw, name="tick time")
+        if number <= 0:
             raise FreshnessError("tick time must be a positive finite epoch timestamp")
         seconds = number / 1000.0 if number >= 100_000_000_000 else number
         try:
@@ -56,9 +71,6 @@ def _tick_timestamp(tick: Mapping[str, object]) -> datetime:
     for fmt in ("%Y%m%d %H:%M:%S.%f", "%Y%m%d %H:%M:%S"):
         try:
             parsed = datetime.strptime(text, fmt)
-            # XtQuant timetag/stime is local market time. Convert explicitly from China Standard Time.
-            from datetime import timedelta
-
             china_tz = timezone(timedelta(hours=8))
             return parsed.replace(tzinfo=china_tz).astimezone(timezone.utc)
         except ValueError:
@@ -80,7 +92,7 @@ def validate_tick_freshness(
     for code in list(dict.fromkeys(str(item) for item in codes)):
         tick = ticks.get(code)
         if tick is None:
-            violation = {"code": code, "reason": "missing_tick"}
+            violation: dict[str, object] = {"code": code, "reason": "missing_tick"}
             violations.append(violation)
             rows.append(violation)
             continue
@@ -102,7 +114,11 @@ def validate_tick_freshness(
                 violations.append(dict(row))
             rows.append(row)
         except FreshnessError as exc:
-            violation = {"code": code, "reason": "unknown_tick_clock", "error": str(exc)}
+            violation = {
+                "code": code,
+                "reason": "unknown_tick_clock",
+                "error": str(exc),
+            }
             violations.append(violation)
             rows.append(violation)
     return {
