@@ -198,7 +198,7 @@ def main() -> int:
     )
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
-    state_root = Path(args.state_dir)
+    state_root = Path(args.state_dir).resolve()
     account_key = account_execution_key(account_id=args.account, account_type=args.account_type)
 
     bundle = validate_target_bundle(
@@ -403,9 +403,15 @@ def main() -> int:
             "stage": stage,
             **details,
         }
-        _write_json(out / "execution_failure.json", payload)
-        journal_event({"event": "EXECUTION_STOP_MANUAL_RECONCILIATION", **payload})
         update_execution_batch(batch_marker, status="MANUAL_RECONCILIATION", details=payload)
+        try:
+            _write_json(out / "execution_failure.json", payload)
+        except Exception:
+            pass
+        try:
+            journal_event({"event": "EXECUTION_STOP_MANUAL_RECONCILIATION", **payload})
+        except Exception:
+            pass
         return 4
 
     try:
@@ -434,13 +440,13 @@ def main() -> int:
             )
         sell_incomplete = incomplete_results(sell_results)
         if sell_incomplete:
+            journal_event({"event": "EXECUTION_INCOMPLETE_PENDING_RELEASE", "stage": "SELL"})
             update_execution_batch(
                 batch_marker,
                 status="INCOMPLETE",
                 details={"stage": "SELL", "results": sell_results},
             )
             release_account_execution_lock(account_lock, batch_id=batch_id)
-            journal_event({"event": "EXECUTION_INCOMPLETE", "stage": "SELL"})
             return 3
 
         after_sell_asset, after_sell_cash, after_sell_positions = broker.snapshot()
@@ -463,13 +469,15 @@ def main() -> int:
         )
         _write_json(out / "after_sell_runtime_risk.json", after_sell_runtime)
         if not after_sell_runtime["passed"]:
+            journal_event(
+                {"event": "EXECUTION_INCOMPLETE_PENDING_RELEASE", "stage": "AFTER_SELL_RUNTIME_RISK"}
+            )
             update_execution_batch(
                 batch_marker,
                 status="INCOMPLETE",
                 details={"stage": "AFTER_SELL_RUNTIME_RISK", "runtime_risk": after_sell_runtime},
             )
             release_account_execution_lock(account_lock, batch_id=batch_id)
-            journal_event({"event": "EXECUTION_INCOMPLETE", "stage": "AFTER_SELL_RUNTIME_RISK"})
             return 3
 
         buy_risk = validate_pretrade(
@@ -483,13 +491,13 @@ def main() -> int:
         _write_json(out / "buy_phase_pretrade_risk.json", buy_risk)
         _write_json(out / "buy_phase_cash_reserve.json", buy_reserve)
         if not buy_risk["passed"]:
+            journal_event({"event": "EXECUTION_INCOMPLETE_PENDING_RELEASE", "stage": "BUY_PRETRADE_RISK"})
             update_execution_batch(
                 batch_marker,
                 status="INCOMPLETE",
                 details={"stage": "BUY_PRETRADE_RISK", "risk": buy_risk},
             )
             release_account_execution_lock(account_lock, batch_id=batch_id)
-            journal_event({"event": "EXECUTION_INCOMPLETE", "stage": "BUY_PRETRADE_RISK"})
             return 3
 
         update_execution_batch(
@@ -539,6 +547,7 @@ def main() -> int:
         _write_json(out / "final_account_snapshot.json", final_snapshot)
 
         if buy_incomplete or quantity_deviations:
+            journal_event({"event": "EXECUTION_INCOMPLETE_PENDING_RELEASE", "stage": "BUY"})
             update_execution_batch(
                 batch_marker,
                 status="INCOMPLETE",
@@ -549,11 +558,17 @@ def main() -> int:
                 },
             )
             release_account_execution_lock(account_lock, batch_id=batch_id)
-            journal_event({"event": "EXECUTION_INCOMPLETE", "stage": "BUY"})
             return 3
 
         all_submitted_ids = sorted(
             set(submitted_order_ids(sell_results) + submitted_order_ids(buy_results))
+        )
+        journal_event(
+            {
+                "event": "EXECUTION_COMPLETE_PENDING_RELEASE",
+                "submitted_order_ids": all_submitted_ids,
+                "final_cash": final_cash,
+            }
         )
         update_execution_batch(
             batch_marker,
@@ -561,13 +576,6 @@ def main() -> int:
             details={"submitted_order_ids": all_submitted_ids, "final_snapshot": final_snapshot},
         )
         release_account_execution_lock(account_lock, batch_id=batch_id)
-        journal_event(
-            {
-                "event": "EXECUTION_COMPLETE",
-                "submitted_order_ids": all_submitted_ids,
-                "final_cash": final_cash,
-            }
-        )
         return 0
     except Exception as exc:
         return manual_stop(
