@@ -107,6 +107,9 @@ def test_account_lock_cannot_be_released_by_another_batch(tmp_path) -> None:
 
 def test_nonterminal_batch_status_requires_recovery() -> None:
     assert batch_status_requires_recovery("RESERVED") is True
+    assert batch_status_requires_recovery("SELL_SUBMITTING") is True
+    assert batch_status_requires_recovery("BUY_SUBMITTING") is True
     assert batch_status_requires_recovery("MANUAL_RECONCILIATION") is True
     assert batch_status_requires_recovery("COMPLETED") is False
     assert batch_status_requires_recovery("INCOMPLETE") is False
+    assert batch_status_requires_recovery("RECOVERED_RELEASED") is False
