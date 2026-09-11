@@ -14,6 +14,8 @@ import pandas as pd
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ACCEPTANCE_SCHEMA = "qmt-acceptance-v2"
+_ACCEPTANCE_EVIDENCE_KEYS = ("backtest", "walk_forward", "folds", "stress")
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,18 @@ def validate_acceptance_for_strategy(path: str | Path, minimum: str, strategy_sh
     if not source.exists():
         raise RuntimeError(f"Acceptance report missing: {source}")
     report = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(report, Mapping):
+        raise RuntimeError("acceptance report must be a JSON object")
+    if str(report.get("schema", "")) != _ACCEPTANCE_SCHEMA:
+        raise RuntimeError(f"live acceptance requires schema {_ACCEPTANCE_SCHEMA}")
+    evidence_hashes = report.get("evidence_sha256")
+    if not isinstance(evidence_hashes, Mapping):
+        raise RuntimeError("live acceptance requires immutable evidence SHA256 metadata")
+    for key in _ACCEPTANCE_EVIDENCE_KEYS:
+        value = str(evidence_hashes.get(key, ""))
+        if not _SHA256_RE.fullmatch(value):
+            raise RuntimeError(f"live acceptance missing valid evidence SHA256 for {key}")
+
     rank = {"REJECT": 0, "C": 1, "B": 2, "A": 3}
     grade = str(report.get("grade", "REJECT"))
     if rank.get(grade, 0) < rank[minimum]:
@@ -124,4 +138,4 @@ def validate_acceptance_for_strategy(path: str | Path, minimum: str, strategy_sh
     observed_sha = str(report.get("strategy_sha256", ""))
     if not strategy_sha256 or observed_sha != strategy_sha256:
         raise RuntimeError("acceptance report is not bound to the exact target strategy SHA256")
-    return report
+    return dict(report)
