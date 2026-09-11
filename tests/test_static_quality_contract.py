@@ -11,6 +11,9 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
     command = normalized_run(workflow, "offline-tests", "Mypy safety-contract gate")
     for path in (
         "qmt_quant/production_candidate.py",
+        "qmt_quant/live_safety.py",
+        "qmt_quant/target_planning.py",
+        "qmt_quant/execution_state.py",
         "qmt_quant/v5_gates.py",
         "qmt_quant/adjustment_provenance.py",
         "qmt_quant/backtest.py",
@@ -32,7 +35,10 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
         "qmt_quant/neutralization_diagnostics.py",
         "qmt_quant/v5_selector.py",
         "run_v5_c9_neutralization_diagnostics.py",
+        "run_qmt_executor.py",
+        "risk/pretrade.py",
         "risk/runtime.py",
+        "monitoring/check_runtime.py",
         "monitoring/alerts.py",
     ):
         assert path in command
