@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -11,6 +12,7 @@ from qmt_quant.acceptance import grade_strategy
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+ACCEPTANCE_SCHEMA = "qmt-acceptance-v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +37,17 @@ def _load_json(path: str) -> dict:
     return payload
 
 
+def _sha256_path(path: str | Path) -> str:
+    source = Path(path)
+    if not source.exists() or not source.is_file():
+        raise FileNotFoundError(source)
+    digest = hashlib.sha256()
+    with source.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _require_strategy_sha(value: str) -> str:
     sha = str(value).strip().lower()
     if not _SHA256_RE.fullmatch(sha):
@@ -53,12 +66,17 @@ def main() -> int:
         raise FileNotFoundError(folds_path)
     folds = pd.read_csv(folds_path)
     report = grade_strategy(backtest, oos, folds, stress)
+    report["schema"] = ACCEPTANCE_SCHEMA
     report["strategy_sha256"] = strategy_sha256
-    report["evidence"] = {
+    evidence_paths = {
         "backtest": str(Path(args.backtest)),
         "walk_forward": str(Path(args.walk_forward)),
         "folds": str(folds_path),
         "stress": str(Path(args.stress)),
+    }
+    report["evidence"] = evidence_paths
+    report["evidence_sha256"] = {
+        name: _sha256_path(path) for name, path in evidence_paths.items()
     }
 
     out = Path(args.output)
