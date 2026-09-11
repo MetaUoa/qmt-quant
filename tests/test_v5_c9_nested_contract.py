@@ -18,10 +18,15 @@ from qmt_quant.workflow_contract import (
 WORKFLOW = Path(".github/workflows/v5-c9-neutralization-diagnostics.yml")
 
 
-def test_c9_rejects_holdout_dates() -> None:
+def test_c9_rejects_holdout_dates_and_cli_bypasses() -> None:
     c9._assert_pre_2026_only(["--end", "20251231"])
+    c9._assert_pre_2026_only(["--end=20251231"])
     with pytest.raises(RuntimeError, match="holdout remains blinded"):
         c9._assert_pre_2026_only(["--end", "20260101"])
+    with pytest.raises(RuntimeError, match="holdout remains blinded"):
+        c9._assert_pre_2026_only(["--end=20260101"])
+    with pytest.raises(RuntimeError, match="duplicate --end"):
+        c9._assert_pre_2026_only(["--end", "20251231", "--end=20260101"])
 
 
 def test_c9_workflow_is_manual_only_and_pinned_to_authoritative_history() -> None:
@@ -44,6 +49,9 @@ def test_c9_workflow_is_manual_only_and_pinned_to_authoritative_history() -> Non
         "diagnostics",
         "Run strict purged C1 nested path with fold-safe C9 diagnostics",
     )
+    install = normalized_run(workflow, "diagnostics", "Install research dependencies")
+    assert "python -m pip install -r requirements.txt" in install
+    assert "python -m pip check" in install
     assert "--min-symbol-coverage 0.98" in audit
     assert "--min-session-coverage 0.97" in audit
     assert "--end 20251231" in runner
@@ -174,8 +182,9 @@ def test_c9_main_stops_immediately_after_fourth_variant_capture(monkeypatch, tmp
         assert getattr(c9.c1, name) is value
 
 
-def test_c9_removes_stale_selection_outputs_before_diagnostics(tmp_path: Path) -> None:
-    for name in c9._FORBIDDEN_C1_OUTPUTS:
-        (tmp_path / name).write_text("stale", encoding="utf-8")
-    c9._remove_forbidden_stale_outputs(tmp_path)
-    assert all(not (tmp_path / name).exists() for name in c9._FORBIDDEN_C1_OUTPUTS)
+def test_c9_refuses_existing_selection_outputs_without_deleting_them(tmp_path: Path) -> None:
+    existing = tmp_path / "candidate_manifest.json"
+    existing.write_text("frozen", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="refuse to delete or overwrite"):
+        c9._assert_output_namespace_safe(tmp_path)
+    assert existing.read_text(encoding="utf-8") == "frozen"
