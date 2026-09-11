@@ -34,9 +34,13 @@ def recovery_report_sha256(report: Mapping[str, object]) -> str:
     payload = dict(report)
     payload.pop("generated_at_utc", None)
     payload.pop("report_sha256", None)
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
-        "utf-8"
-    )
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -69,7 +73,8 @@ def assess_execution_recovery(
     batch_id = str(batch_marker.get("batch_id", ""))
     account_key = str(batch_marker.get("account_key", ""))
     violations: list[str] = []
-    if not _SHA256_RE.fullmatch(batch_id):
+    valid_batch_id = bool(_SHA256_RE.fullmatch(batch_id))
+    if not valid_batch_id:
         violations.append("invalid_batch_id")
     if not _SHA256_RE.fullmatch(account_key):
         violations.append("invalid_account_key")
@@ -92,20 +97,31 @@ def assess_execution_recovery(
     trade_order_ids = {_positive_order_id(row) for row in trades}
     trade_order_ids.discard(0)
 
+    batch_tag_prefix = f"qmtq:{batch_id[:12]}:" if valid_batch_id else ""
+    attempt_remarks = {
+        str(row.get("order_remark", ""))
+        for row in attempt_rows
+        if str(row.get("order_remark", ""))
+    }
     results_by_remark: dict[str, list[dict]] = {}
     direct_submitted_ids: set[int] = set()
     for row in result_rows:
         remark = str(row.get("order_remark", ""))
+        status = str(row.get("status", ""))
         if remark:
             results_by_remark.setdefault(remark, []).append(row)
-        if str(row.get("status", "")) == "SUBMITTED":
+        if status in {"SUBMITTED", "SUBMIT_EXCEPTION", "FAILED"}:
+            if not remark:
+                violations.append(f"submit_result_missing_recovery_tag:{status}")
+            elif remark not in attempt_remarks:
+                violations.append(f"submit_result_without_attempt:{remark}")
+        if status == "SUBMITTED":
             order_id = _positive_order_id(row)
             if order_id <= 0:
                 violations.append("submitted_result_missing_order_id")
             else:
                 direct_submitted_ids.add(order_id)
 
-    batch_tag_prefix = f"qmtq:{batch_id[:12]}:" if _SHA256_RE.fullmatch(batch_id) else ""
     tagged_orders = [
         dict(row)
         for row in all_orders
@@ -121,6 +137,9 @@ def assess_execution_recovery(
         remark = str(attempt.get("order_remark", ""))
         if not remark:
             violations.append("submit_attempt_missing_recovery_tag")
+            continue
+        if batch_tag_prefix and not remark.startswith(batch_tag_prefix):
+            violations.append(f"submit_attempt_wrong_batch_tag:{remark}")
             continue
         if remark in resolved_attempt_remarks:
             violations.append(f"duplicate_submit_attempt:{remark}")
@@ -138,9 +157,6 @@ def assess_execution_recovery(
                 violations.append(f"submitted_result_missing_order_id:{remark}")
             continue
         if result is not None and result_status not in {"SUBMIT_EXCEPTION", ""}:
-            # FAILED is a synchronous zero order-id result and skip statuses never emit
-            # SUBMIT_ATTEMPT. Any other synchronous terminal result has no uncertain
-            # side effect to recover here.
             continue
 
         matches = tagged_by_remark.get(remark, [])
@@ -164,7 +180,9 @@ def assess_execution_recovery(
 
     missing_history = known_order_ids.difference(order_by_id)
     if missing_history:
-        violations.append("missing_broker_order_history:" + ",".join(str(x) for x in sorted(missing_history)))
+        violations.append(
+            "missing_broker_order_history:" + ",".join(str(x) for x in sorted(missing_history))
+        )
 
     active = known_order_ids.intersection(cancelable_ids)
     if active:
