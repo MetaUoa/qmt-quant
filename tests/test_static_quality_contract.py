@@ -11,7 +11,9 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
     command = normalized_run(workflow, "offline-tests", "Mypy safety-contract gate")
     for path in (
         "qmt_quant/production_candidate.py",
+        "qmt_quant/acceptance_lineage.py",
         "qmt_quant/live_safety.py",
+        "qmt_quant/live_trader.py",
         "qmt_quant/target_planning.py",
         "qmt_quant/execution_state.py",
         "qmt_quant/v5_gates.py",
@@ -34,6 +36,8 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
         "qmt_quant/composites.py",
         "qmt_quant/neutralization_diagnostics.py",
         "qmt_quant/v5_selector.py",
+        "generate_live_targets.py",
+        "run_acceptance.py",
         "run_v5_c9_neutralization_diagnostics.py",
         "run_qmt_executor.py",
         "risk/pretrade.py",
