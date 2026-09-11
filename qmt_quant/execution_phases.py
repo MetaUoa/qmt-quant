@@ -57,6 +57,65 @@ def submitted_order_ids(results: Sequence[Mapping[str, object]]) -> list[int]:
     return sorted(ids)
 
 
+def validate_full_fill_reconciliation(
+    results: Sequence[Mapping[str, object]],
+    reconciliation: Mapping[str, object],
+) -> dict:
+    """Require every submitted instruction to be fully filled by broker history."""
+    rows_value = reconciliation.get("orders", [])
+    if not isinstance(rows_value, list):
+        raise ValueError("reconciliation orders must be a list")
+    broker_by_id: dict[int, Mapping[str, object]] = {}
+    for raw in rows_value:
+        if not isinstance(raw, Mapping):
+            raise ValueError("reconciliation order row must be an object")
+        order_id = _strict_int(raw.get("order_id"), name="broker.order_id")
+        if order_id <= 0:
+            continue
+        if order_id in broker_by_id:
+            raise ValueError(f"duplicate broker order id in reconciliation: {order_id}")
+        broker_by_id[order_id] = raw
+
+    mismatches: list[dict[str, object]] = []
+    for result in results:
+        if str(result.get("status", "")) != "SUBMITTED":
+            continue
+        order_id = _strict_int(result.get("order_id"), name="result.order_id")
+        expected_shares = _strict_int(result.get("shares"), name=f"result.shares:{order_id}")
+        expected_code = str(result.get("code", ""))
+        broker = broker_by_id.get(order_id)
+        if broker is None:
+            mismatches.append(
+                {"order_id": order_id, "code": expected_code, "reason": "missing_broker_order"}
+            )
+            continue
+        broker_code = str(broker.get("code", ""))
+        order_volume = _strict_int(broker.get("order_volume"), name=f"broker.order_volume:{order_id}")
+        traded_volume = _strict_int(
+            broker.get("traded_volume"), name=f"broker.traded_volume:{order_id}"
+        )
+        reasons: list[str] = []
+        if broker_code != expected_code:
+            reasons.append("code_mismatch")
+        if order_volume != expected_shares:
+            reasons.append("order_volume_mismatch")
+        if traded_volume != expected_shares:
+            reasons.append("not_fully_filled")
+        if reasons:
+            mismatches.append(
+                {
+                    "order_id": order_id,
+                    "code": expected_code,
+                    "expected_shares": expected_shares,
+                    "broker_code": broker_code,
+                    "order_volume": order_volume,
+                    "traded_volume": traded_volume,
+                    "reasons": reasons,
+                }
+            )
+    return {"passed": not mismatches, "mismatches": mismatches}
+
+
 def has_uncertain_submission(results: Sequence[Mapping[str, object]]) -> bool:
     return any(str(row.get("status", "")) == "SUBMIT_EXCEPTION" for row in results)
 
@@ -65,32 +124,33 @@ def incomplete_results(results: Sequence[Mapping[str, object]]) -> list[dict]:
     return [dict(row) for row in results if str(row.get("status", "")) != "SUBMITTED"]
 
 
-def expected_positions_after_full_sells(
+def expected_positions_after_full_orders(
     before: Mapping[str, PositionSnapshot],
-    sell_results: Sequence[Mapping[str, object]],
+    results: Sequence[Mapping[str, object]],
 ) -> dict[str, int]:
     expected = {str(code): int(position.volume) for code, position in before.items()}
-    for row in sell_results:
+    for row in results:
         if str(row.get("status", "")) != "SUBMITTED":
             continue
         code = str(row.get("code", ""))
+        side = str(row.get("side", ""))
         shares = _strict_int(row.get("shares"), name=f"shares:{code}")
-        expected[code] = max(expected.get(code, 0) - shares, 0)
+        if side == "SELL":
+            expected[code] = max(expected.get(code, 0) - shares, 0)
+        elif side == "BUY":
+            expected[code] = expected.get(code, 0) + shares
+        else:
+            raise ValueError(f"unsupported submitted side during position validation: {side}")
     return expected
 
 
-def validate_sell_position_effect(
+def validate_position_effect(
     before: Mapping[str, PositionSnapshot],
-    sell_results: Sequence[Mapping[str, object]],
+    results: Sequence[Mapping[str, object]],
     after: Mapping[str, PositionSnapshot],
 ) -> dict:
-    """Require the post-sell snapshot to equal the expected full-fill share state.
-
-    This checks every observed position, not just sold symbols. An unrelated manual or
-    external trade during the live batch therefore blocks the BUY phase rather than
-    silently changing the account beneath the executor.
-    """
-    expected = expected_positions_after_full_sells(before, sell_results)
+    """Require the whole account share map to match the submitted full-fill effects."""
+    expected = expected_positions_after_full_orders(before, results)
     observed = {str(code): int(position.volume) for code, position in after.items()}
     mismatches: list[dict[str, object]] = []
     for code in sorted(set(expected) | set(observed)):
@@ -110,6 +170,14 @@ def validate_sell_position_effect(
         "expected_positions": expected,
         "observed_positions": observed,
     }
+
+
+def validate_sell_position_effect(
+    before: Mapping[str, PositionSnapshot],
+    sell_results: Sequence[Mapping[str, object]],
+    after: Mapping[str, PositionSnapshot],
+) -> dict:
+    return validate_position_effect(before, sell_results, after)
 
 
 def estimate_buy_cash_reserve(
