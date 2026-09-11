@@ -69,14 +69,14 @@ def serialize_plan(plan: list[OrderInstruction]) -> list[dict]:
     return [asdict(item) for item in plan]
 
 
-def _require_rows(rows: object, query_name: str) -> list:
+def _require_rows(rows: Iterable[object] | None, query_name: str) -> list[object]:
     # XtQuant documents None for position/order/trade queries as either query failure
     # or an empty result. Production execution cannot safely tell those cases apart,
     # so ambiguity is a hard stop rather than an inferred empty account state.
     if rows is None:
         raise BrokerStateUnknown(f"{query_name} returned None; broker state is ambiguous")
     try:
-        return list(rows)  # type: ignore[arg-type]
+        return list(rows)
     except TypeError as exc:
         raise BrokerStateUnknown(f"{query_name} returned a non-iterable result") from exc
 
