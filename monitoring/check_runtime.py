@@ -101,9 +101,11 @@ def main() -> int:
     runtime_path = Path(args.runtime_risk)
     if runtime_path.exists():
         runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        checks["runtime_risk_present"] = True
         checks["runtime_risk_passed"] = bool(runtime.get("passed"))
     else:
-        checks["runtime_risk_passed"] = None
+        checks["runtime_risk_present"] = False
+        checks["runtime_risk_passed"] = False
 
     mandatory = (
         "acceptance_ok",
@@ -115,6 +117,8 @@ def main() -> int:
         "signal_target_sha_match",
         "acceptance_target_sha_match",
         "pretrade_risk_passed",
+        "runtime_risk_present",
+        "runtime_risk_passed",
     )
     checks["passed"] = all(checks.get(key) is True for key in mandatory)
     payload = {
