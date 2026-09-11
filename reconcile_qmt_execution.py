@@ -50,7 +50,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def main() -> int:
     args = parse_args()
-    state_root = Path(args.state_dir)
+    state_root = Path(args.state_dir).resolve()
     output = Path(args.output)
     account_key = account_execution_key(account_id=args.account, account_type=args.account_type)
     lock = load_account_execution_lock(state_root, account_key=account_key)
@@ -78,7 +78,10 @@ def main() -> int:
         raise RuntimeError(
             "batch marker does not contain canonical journal_path; conservative automatic recovery is unavailable"
         )
-    journal = load_execution_journal(journal_value)
+    journal_path = Path(journal_value)
+    if not journal_path.is_absolute():
+        raise RuntimeError("canonical journal_path must be absolute")
+    journal = load_execution_journal(journal_path)
 
     broker = QmtBroker(args.userdata, args.account, args.session_id, args.account_type)
     broker.connect(max_attempts=3, retry_delay_seconds=1.0)
@@ -94,7 +97,7 @@ def main() -> int:
         trades=trades,
     )
     report["batch_marker_path"] = str(batch_path)
-    report["journal_path"] = journal_value
+    report["journal_path"] = str(journal_path)
     report["account_lock_path"] = str(account_lock_path(state_root, account_key=account_key))
 
     acknowledge = str(args.acknowledge_batch).strip().lower()
