@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import math
 import time
 from typing import Callable, Iterable
 
 from .backtest_execution import affordable_buy_quantity, commission
+from .broker_events import EventSink, callback_method_map
 from .config import CostConfig
+from .freshness import FreshnessPolicy, require_fresh, validate_tick_freshness
+from .transaction_costs import (
+    AshareFeeSchedule,
+    affordable_buy_quantity_with_fees,
+    fee_breakdown,
+)
 
 
 class BrokerStateUnknown(RuntimeError):
@@ -81,15 +89,16 @@ def _require_rows(rows: Iterable[object] | None, query_name: str) -> list[object
 
 
 class QmtBroker:
-    """Thin MiniQMT execution adapter with fail-closed state handling."""
+    """Thin MiniQMT execution adapter with fail-closed state and callback handling."""
 
     def __init__(self, userdata_path: str, account_id: str, session_id: int, account_type: str = "STOCK") -> None:
         try:
-            from xtquant.xttrader import XtQuantTrader
+            from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
             from xtquant.xttype import StockAccount
         except ImportError as exc:
             raise RuntimeError("xtquant trading modules are not available in this Python environment") from exc
         self._XtQuantTrader = XtQuantTrader
+        self._XtQuantTraderCallback = XtQuantTraderCallback
         self._StockAccount = StockAccount
         self.userdata_path = userdata_path
         self.account_id = account_id
@@ -97,14 +106,97 @@ class QmtBroker:
         self.account_type = account_type
         self.trader = None
         self.account = None
+        self._callback = None
+        self._event_sink: EventSink | None = None
+        self._event_buffer: list[dict[str, object]] = []
+        self._event_sink_error: str | None = None
+        self._connection_lost = False
+        self._connected_at_utc: str | None = None
+        self._last_broker_event_at_utc: str | None = None
+
+    def _mark_disconnected(self) -> None:
+        self._connection_lost = True
+
+    def _record_broker_event(self, payload: dict[str, object]) -> None:
+        record = dict(payload)
+        self._last_broker_event_at_utc = str(
+            record.get("broker_event_received_at_utc") or datetime.now(timezone.utc).isoformat()
+        )
+        sink = getattr(self, "_event_sink", None)
+        if sink is None:
+            buffer = getattr(self, "_event_buffer", None)
+            if buffer is None:
+                self._event_buffer = []
+                buffer = self._event_buffer
+            if len(buffer) >= 1000:
+                buffer.pop(0)
+            buffer.append(record)
+            return
+        try:
+            sink(record)
+        except Exception as exc:
+            self._event_sink_error = f"{type(exc).__name__}: {exc}"
+
+    def attach_event_sink(self, sink: EventSink) -> None:
+        if not callable(sink):
+            raise TypeError("broker event sink must be callable")
+        if getattr(self, "_event_sink_error", None):
+            raise BrokerStateUnknown("broker callback journal previously failed")
+        self._event_sink = sink
+        buffered = list(getattr(self, "_event_buffer", []))
+        self._event_buffer = []
+        for record in buffered:
+            try:
+                sink(dict(record))
+            except Exception as exc:
+                self._event_sink_error = f"{type(exc).__name__}: {exc}"
+                raise BrokerStateUnknown("failed to flush buffered broker callback events") from exc
+
+    def broker_health(self) -> dict[str, object]:
+        return {
+            "connected": bool(self.trader is not None and self.account is not None),
+            "connection_lost": bool(getattr(self, "_connection_lost", False)),
+            "event_sink_failed": bool(getattr(self, "_event_sink_error", None)),
+            "event_sink_error": getattr(self, "_event_sink_error", None),
+            "connected_at_utc": getattr(self, "_connected_at_utc", None),
+            "last_broker_event_at_utc": getattr(self, "_last_broker_event_at_utc", None),
+            "buffered_event_count": len(getattr(self, "_event_buffer", [])),
+        }
+
+    def _require_connection_healthy(self) -> None:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("Broker is not connected")
+        if bool(getattr(self, "_connection_lost", False)):
+            raise BrokerStateUnknown(
+                "MiniQMT disconnect callback was observed; automatic reconnect is disabled during a batch"
+            )
+        if getattr(self, "_event_sink_error", None):
+            raise BrokerStateUnknown("broker callback journal failed; live state is no longer auditable")
 
     def connect(self, *, max_attempts: int = 3, retry_delay_seconds: float = 1.0) -> None:
         attempts = max(int(max_attempts), 1)
         last_error: Exception | None = None
+        self._connection_lost = False
+        self._event_sink_error = None
         for attempt in range(1, attempts + 1):
             trader = self._XtQuantTrader(self.userdata_path, self.session_id)
             account = self._StockAccount(self.account_id, self.account_type)
             try:
+                base_callback = getattr(self, "_XtQuantTraderCallback", object)
+                callback_cls = type(
+                    "QmtQuantTraderJournalCallback",
+                    (base_callback,),
+                    callback_method_map(
+                        self._record_broker_event,
+                        expected_account_id=self.account_id,
+                        on_disconnect=self._mark_disconnected,
+                    ),
+                )
+                callback = callback_cls()
+                register = getattr(trader, "register_callback", None)
+                if callable(register):
+                    register(callback)
+                self._callback = callback
                 trader.start()
                 rc = trader.connect()
                 if rc != 0:
@@ -114,6 +206,17 @@ class QmtBroker:
                     raise RuntimeError(f"MiniQMT account subscribe failed: {sub}")
                 self.trader = trader
                 self.account = account
+                self._connected_at_utc = datetime.now(timezone.utc).isoformat()
+                self._record_broker_event(
+                    {
+                        "event": "BROKER_CONNECTED",
+                        "broker_event_received_at_utc": self._connected_at_utc,
+                        "account_id": self.account_id,
+                        "account_type": self.account_type,
+                        "connect_result": int(rc),
+                        "subscribe_result": int(sub),
+                    }
+                )
                 return
             except Exception as exc:
                 last_error = exc
@@ -128,8 +231,7 @@ class QmtBroker:
         raise RuntimeError(f"MiniQMT connect failed after {attempts} attempts") from last_error
 
     def snapshot(self) -> tuple[float, float, dict[str, PositionSnapshot]]:
-        if self.trader is None or self.account is None:
-            raise RuntimeError("Broker is not connected")
+        self._require_connection_healthy()
         asset = self.trader.query_stock_asset(self.account)
         if asset is None:
             raise BrokerStateUnknown("query_stock_asset returned None; broker state is unknown")
@@ -159,8 +261,8 @@ class QmtBroker:
             raise BrokerStateUnknown("query_stock_asset returned an invalid account valuation")
         return total_asset, cash, mapped
 
-    @staticmethod
-    def full_tick(codes: Iterable[str]) -> dict:
+    def full_tick(self, codes: Iterable[str]) -> dict:
+        self._require_connection_healthy()
         try:
             from xtquant import xtdata
         except ImportError as exc:
@@ -197,8 +299,7 @@ class QmtBroker:
         return out
 
     def query_orders(self, *, cancelable_only: bool = False) -> list[dict]:
-        if self.trader is None or self.account is None:
-            raise RuntimeError("Broker is not connected")
+        self._require_connection_healthy()
         rows = _require_rows(
             self.trader.query_stock_orders(self.account, bool(cancelable_only)),
             "query_stock_orders",
@@ -223,8 +324,7 @@ class QmtBroker:
         return out
 
     def query_trades(self) -> list[dict]:
-        if self.trader is None or self.account is None:
-            raise RuntimeError("Broker is not connected")
+        self._require_connection_healthy()
         rows = _require_rows(
             self.trader.query_stock_trades(self.account),
             "query_stock_trades",
@@ -238,6 +338,7 @@ class QmtBroker:
                     "traded_volume": int(getattr(row, "traded_volume", 0) or 0),
                     "traded_price": float(getattr(row, "traded_price", 0.0) or 0.0),
                     "traded_id": str(getattr(row, "traded_id", "") or ""),
+                    "order_remark": str(getattr(row, "order_remark", "") or ""),
                 }
             )
         return out
@@ -251,7 +352,9 @@ class QmtBroker:
     ) -> dict:
         wanted = {int(x) for x in order_ids if int(x) > 0}
         found: dict[int, dict] = {}
+        query_times: list[str] = []
         for attempt in range(max(int(max_attempts), 1)):
+            query_times.append(datetime.now(timezone.utc).isoformat())
             for row in self.query_orders(cancelable_only=False):
                 if int(row["order_id"]) in wanted:
                     found[int(row["order_id"])] = row
@@ -266,6 +369,8 @@ class QmtBroker:
                 wanted.difference(found)
                 or any(int(row.get("remaining_volume", 0)) > 0 for row in found.values())
             ),
+            "query_times_utc": query_times,
+            "completed_at_utc": datetime.now(timezone.utc).isoformat(),
         }
 
     def submit_plan(
@@ -276,11 +381,14 @@ class QmtBroker:
         on_event: Callable[[dict], None] | None = None,
         starting_cash: float | None = None,
         cost: CostConfig | None = None,
+        fee_schedule: AshareFeeSchedule | None = None,
         batch_tag: str = "",
         phase: str = "",
+        freshness_policy: FreshnessPolicy | None = None,
+        require_fresh_quotes: bool = False,
+        on_freshness: Callable[[dict[str, object]], None] | None = None,
     ) -> list[dict]:
-        if self.trader is None or self.account is None:
-            raise RuntimeError("Broker is not connected")
+        self._require_connection_healthy()
         from xtquant import xtconstant
 
         active_cost = cost or CostConfig()
@@ -296,10 +404,25 @@ class QmtBroker:
                 on_event(dict(payload))
 
         codes = [x.code for x in plan]
-        tick_prices = self.executable_prices(self.full_tick(codes))
+        ticks = self.full_tick(codes) if codes else {}
+        if codes and freshness_policy is not None:
+            freshness = validate_tick_freshness(
+                ticks,
+                codes,
+                policy=freshness_policy,
+            )
+            if on_freshness is not None:
+                on_freshness(dict(freshness))
+            if require_fresh_quotes:
+                try:
+                    require_fresh(freshness, label=f"{phase or 'order'} quotes")
+                except Exception as exc:
+                    raise BrokerStateUnknown(str(exc)) from exc
+        tick_prices = self.executable_prices(ticks)
         results: list[dict] = []
         phase_token = (phase or "MIXED").strip().upper()
         for index, item in enumerate(plan):
+            self._require_connection_healthy()
             if batch_tag:
                 side_token = "S" if item.side == "SELL" else "B"
                 order_remark = f"qmtq:{batch_tag[:12]}:{side_token}:{index}"
@@ -343,6 +466,7 @@ class QmtBroker:
             shares = int(item.shares)
             reserved_cash = 0.0
             estimated_commission = 0.0
+            estimated_fees: dict[str, object] | None = None
             if item.side == "BUY":
                 asset_now = self.trader.query_stock_asset(self.account)
                 if asset_now is None:
@@ -353,12 +477,21 @@ class QmtBroker:
                 if not math.isfinite(broker_cash) or broker_cash < 0:
                     raise BrokerStateUnknown("query_stock_asset returned invalid cash during BUY check")
                 available_cash = min(broker_cash, local_cash_budget)
-                shares = affordable_buy_quantity(
-                    requested_shares=shares,
-                    execution_price=price,
-                    cash=available_cash,
-                    cost=active_cost,
-                )
+                if fee_schedule is None:
+                    shares = affordable_buy_quantity(
+                        requested_shares=shares,
+                        execution_price=price,
+                        cash=available_cash,
+                        cost=active_cost,
+                    )
+                else:
+                    shares = affordable_buy_quantity_with_fees(
+                        requested_shares=shares,
+                        execution_price=price,
+                        cash=available_cash,
+                        lot_size=int(active_cost.lot_size),
+                        schedule=fee_schedule,
+                    )
                 if shares < int(active_cost.lot_size):
                     result = {
                         **event_identity,
@@ -369,8 +502,18 @@ class QmtBroker:
                     emit({"event": "RESULT", **result})
                     continue
                 notional = float(shares) * price
-                estimated_commission = commission(active_cost, notional)
-                reserved_cash = notional + estimated_commission
+                if fee_schedule is None:
+                    estimated_commission = commission(active_cost, notional)
+                    reserved_cash = notional + estimated_commission
+                else:
+                    breakdown = fee_breakdown(
+                        side="BUY",
+                        notional=notional,
+                        schedule=fee_schedule,
+                    )
+                    estimated_commission = float(breakdown.broker_commission)
+                    estimated_fees = asdict(breakdown)
+                    reserved_cash = notional + float(breakdown.total_cash_fee)
 
             emit(
                 {
@@ -380,8 +523,10 @@ class QmtBroker:
                     "price": price,
                     "reserved_cash": reserved_cash,
                     "estimated_commission": estimated_commission,
+                    "estimated_fees": estimated_fees,
                 }
             )
+            self._require_connection_healthy()
             try:
                 order_id = self.trader.order_stock(
                     self.account,
@@ -403,6 +548,7 @@ class QmtBroker:
                     "error_type": type(exc).__name__,
                     "reserved_cash": reserved_cash,
                     "estimated_commission": estimated_commission,
+                    "estimated_fees": estimated_fees,
                 }
                 results.append(result)
                 emit({"event": "RESULT", **result})
@@ -420,6 +566,7 @@ class QmtBroker:
                 "status": status,
                 "reserved_cash": reserved_cash,
                 "estimated_commission": estimated_commission,
+                "estimated_fees": estimated_fees,
                 "remaining_local_cash_budget": (
                     float(local_cash_budget) if item.side == "BUY" else None
                 ),
