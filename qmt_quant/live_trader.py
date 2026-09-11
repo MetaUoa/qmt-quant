@@ -5,6 +5,9 @@ import math
 import time
 from typing import Callable, Iterable
 
+from .backtest_execution import affordable_buy_quantity, commission
+from .config import CostConfig
+
 
 class BrokerStateUnknown(RuntimeError):
     """Raised when MiniQMT cannot distinguish an empty state from a query failure."""
@@ -45,7 +48,6 @@ def build_equal_weight_plan(
         desired[code] = max(int(target_value // (px * lot_size)), 0) * lot_size
 
     orders: list[OrderInstruction] = []
-    # Sells first. Never plan more than today's available volume (T+1 safe).
     for code, pos in sorted(positions.items()):
         current = int(pos.volume)
         target = int(desired.get(code, 0))
@@ -65,14 +67,11 @@ def build_equal_weight_plan(
     return orders
 
 
-def serialize_plan(plan: list[OrderInstruction]) -> list[dict]:
+def serialize_plan(plan: list[OrderInstruction] | tuple[OrderInstruction, ...]) -> list[dict]:
     return [asdict(item) for item in plan]
 
 
 def _require_rows(rows: Iterable[object] | None, query_name: str) -> list[object]:
-    # XtQuant documents None for position/order/trade queries as either query failure
-    # or an empty result. Production execution cannot safely tell those cases apart,
-    # so ambiguity is a hard stop rather than an inferred empty account state.
     if rows is None:
         raise BrokerStateUnknown(f"{query_name} returned None; broker state is ambiguous")
     try:
@@ -82,11 +81,7 @@ def _require_rows(rows: Iterable[object] | None, query_name: str) -> list[object
 
 
 class QmtBroker:
-    """Thin MiniQMT execution adapter.
-
-    Live mutation is intentionally isolated here. Callers should default to dry-run and
-    require a separate explicit arming flag before invoking submit_plan().
-    """
+    """Thin MiniQMT execution adapter with fail-closed state handling."""
 
     def __init__(self, userdata_path: str, account_id: str, session_id: int, account_type: str = "STOCK") -> None:
         try:
@@ -174,7 +169,12 @@ class QmtBroker:
         return xtdata.get_full_tick(code_list) or {}
 
     @staticmethod
-    def executable_prices(ticks: dict, *, buy_buffer_bps: float = 8.0, sell_buffer_bps: float = 8.0) -> dict[str, dict]:
+    def executable_prices(
+        ticks: dict,
+        *,
+        buy_buffer_bps: float = 8.0,
+        sell_buffer_bps: float = 8.0,
+    ) -> dict[str, dict]:
         out: dict[str, dict] = {}
         for code, tick in ticks.items():
             last = float(tick.get("lastPrice") or 0.0)
@@ -216,6 +216,8 @@ class QmtBroker:
                     "traded_volume": traded_volume,
                     "remaining_volume": max(order_volume - traded_volume, 0),
                     "order_status": int(getattr(row, "order_status", -1) or -1),
+                    "order_remark": str(getattr(row, "order_remark", "") or ""),
+                    "strategy_name": str(getattr(row, "strategy_name", "") or ""),
                 }
             )
         return out
@@ -268,14 +270,26 @@ class QmtBroker:
 
     def submit_plan(
         self,
-        plan: list[OrderInstruction],
+        plan: list[OrderInstruction] | tuple[OrderInstruction, ...],
         *,
         strategy_name: str = "qmt_quant_v7",
         on_event: Callable[[dict], None] | None = None,
+        starting_cash: float | None = None,
+        cost: CostConfig | None = None,
+        batch_tag: str = "",
+        phase: str = "",
     ) -> list[dict]:
         if self.trader is None or self.account is None:
             raise RuntimeError("Broker is not connected")
         from xtquant import xtconstant
+
+        active_cost = cost or CostConfig()
+        contains_buy = any(item.side == "BUY" for item in plan)
+        if contains_buy and starting_cash is None:
+            raise ValueError("BUY submission requires starting_cash for local reservation")
+        local_cash_budget = float(starting_cash) if starting_cash is not None else 0.0
+        if contains_buy and (not math.isfinite(local_cash_budget) or local_cash_budget < 0):
+            raise ValueError("starting_cash must be a finite non-negative value")
 
         def emit(payload: dict) -> None:
             if on_event is not None:
@@ -284,12 +298,24 @@ class QmtBroker:
         codes = [x.code for x in plan]
         tick_prices = self.executable_prices(self.full_tick(codes))
         results: list[dict] = []
-        for item in plan:
+        phase_token = (phase or "MIXED").strip().upper()
+        for index, item in enumerate(plan):
+            if batch_tag:
+                side_token = "S" if item.side == "SELL" else "B"
+                order_remark = f"qmtq:{batch_tag[:12]}:{side_token}:{index}"
+            else:
+                order_remark = f"{item.side}:{item.reason}"
+            event_identity = {
+                "phase": phase_token,
+                "intent_index": index,
+                "order_remark": order_remark,
+                "code": item.code,
+                "side": item.side,
+            }
             emit(
                 {
                     "event": "INTENT",
-                    "code": item.code,
-                    "side": item.side,
+                    **event_identity,
                     "shares": int(item.shares),
                     "reference_price": float(item.reference_price),
                     "reason": item.reason,
@@ -297,46 +323,63 @@ class QmtBroker:
             )
             p = tick_prices.get(item.code)
             if p is None:
-                result = {"code": item.code, "side": item.side, "status": "SKIP_NO_TICK"}
+                result = {**event_identity, "status": "SKIP_NO_TICK"}
                 results.append(result)
                 emit({"event": "RESULT", **result})
                 continue
             if item.side == "BUY" and not p.get("buy_tradable", False):
-                result = {"code": item.code, "side": item.side, "status": "SKIP_NO_ASK_LIMIT_OR_QUOTE"}
+                result = {**event_identity, "status": "SKIP_NO_ASK_LIMIT_OR_QUOTE"}
                 results.append(result)
                 emit({"event": "RESULT", **result})
                 continue
             if item.side == "SELL" and not p.get("sell_tradable", False):
-                result = {"code": item.code, "side": item.side, "status": "SKIP_NO_BID_LIMIT_OR_QUOTE"}
+                result = {**event_identity, "status": "SKIP_NO_BID_LIMIT_OR_QUOTE"}
                 results.append(result)
                 emit({"event": "RESULT", **result})
                 continue
+
             order_type = xtconstant.STOCK_BUY if item.side == "BUY" else xtconstant.STOCK_SELL
-            price = p["buy"] if item.side == "BUY" else p["sell"]
+            price = float(p["buy"] if item.side == "BUY" else p["sell"])
             shares = int(item.shares)
+            reserved_cash = 0.0
+            estimated_commission = 0.0
             if item.side == "BUY":
                 asset_now = self.trader.query_stock_asset(self.account)
                 if asset_now is None:
                     raise BrokerStateUnknown(
                         "query_stock_asset returned None during BUY cash check; submission stopped"
                     )
-                cash_now = float(getattr(asset_now, "cash", 0.0))
-                if not math.isfinite(cash_now) or cash_now < 0:
+                broker_cash = float(getattr(asset_now, "cash", 0.0))
+                if not math.isfinite(broker_cash) or broker_cash < 0:
                     raise BrokerStateUnknown("query_stock_asset returned invalid cash during BUY check")
-                affordable = int(cash_now // max(price * 100, 1e-12)) * 100
-                shares = min(shares, affordable)
-                if shares < 100:
-                    result = {"code": item.code, "side": item.side, "status": "SKIP_INSUFFICIENT_CASH"}
+                available_cash = min(broker_cash, local_cash_budget)
+                shares = affordable_buy_quantity(
+                    requested_shares=shares,
+                    execution_price=price,
+                    cash=available_cash,
+                    cost=active_cost,
+                )
+                if shares < int(active_cost.lot_size):
+                    result = {
+                        **event_identity,
+                        "status": "SKIP_INSUFFICIENT_CASH",
+                        "available_cash": float(available_cash),
+                    }
                     results.append(result)
                     emit({"event": "RESULT", **result})
                     continue
+                notional = float(shares) * price
+                estimated_commission = commission(active_cost, notional)
+                reserved_cash = notional + estimated_commission
+
             emit(
                 {
                     "event": "SUBMIT_ATTEMPT",
-                    "code": item.code,
-                    "side": item.side,
+                    **event_identity,
                     "shares": shares,
-                    "price": float(price),
+                    "price": price,
+                    "reserved_cash": reserved_cash,
+                    "estimated_commission": estimated_commission,
                 }
             )
             try:
@@ -346,32 +389,40 @@ class QmtBroker:
                     order_type,
                     shares,
                     xtconstant.FIX_PRICE,
-                    float(price),
+                    price,
                     strategy_name,
-                    f"{item.side}:{item.reason}",
+                    order_remark,
                 )
             except Exception as exc:
                 result = {
-                    "code": item.code,
-                    "side": item.side,
+                    **event_identity,
                     "shares": shares,
-                    "price": float(price),
+                    "price": price,
                     "order_id": 0,
                     "status": "SUBMIT_EXCEPTION",
                     "error_type": type(exc).__name__,
+                    "reserved_cash": reserved_cash,
+                    "estimated_commission": estimated_commission,
                 }
                 results.append(result)
                 emit({"event": "RESULT", **result})
-                # The remote side-effect is uncertain when order_stock raises. Stop
-                # sending any further orders until the operator reconciles broker state.
                 break
+
+            order_id_int = int(order_id)
+            status = "SUBMITTED" if order_id_int > 0 else "FAILED"
+            if status == "SUBMITTED" and item.side == "BUY":
+                local_cash_budget = max(local_cash_budget - reserved_cash, 0.0)
             result = {
-                "code": item.code,
-                "side": item.side,
+                **event_identity,
                 "shares": shares,
-                "price": float(price),
-                "order_id": int(order_id),
-                "status": "SUBMITTED" if int(order_id) > 0 else "FAILED",
+                "price": price,
+                "order_id": order_id_int,
+                "status": status,
+                "reserved_cash": reserved_cash,
+                "estimated_commission": estimated_commission,
+                "remaining_local_cash_budget": (
+                    float(local_cash_budget) if item.side == "BUY" else None
+                ),
             }
             results.append(result)
             emit({"event": "RESULT", **result})
