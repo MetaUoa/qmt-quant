@@ -9,7 +9,8 @@ from pathlib import Path
 import pandas as pd
 
 from qmt_quant.live_safety import validate_acceptance_for_strategy, validate_target_bundle
-from qmt_quant.live_trader import QmtBroker, build_equal_weight_plan, serialize_plan
+from qmt_quant.live_trader import QmtBroker, serialize_plan
+from qmt_quant.target_planning import build_target_weight_plan
 from risk.pretrade import validate_pretrade
 
 
@@ -23,7 +24,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target-diagnostics", default="output/live_targets/signal_diagnostics.json")
     p.add_argument("--acceptance", default="output/v5_acceptance/acceptance_report.json")
     p.add_argument("--min-live-grade", choices=["A", "B", "C"], default="C")
-    p.add_argument("--exposure", type=float, default=1.0)
+    p.add_argument(
+        "--exposure",
+        type=float,
+        default=1.0,
+        help="Optional downward scale applied to target weights; never renormalizes them upward",
+    )
     p.add_argument("--output", default="output/live_execution")
     p.add_argument("--enable-live", action="store_true")
     p.add_argument("--confirm-live", default="", help="Live mode requires exact value LIVE")
@@ -47,7 +53,11 @@ def main() -> int:
         require_current_session=bool(args.enable_live),
     )
     targets = bundle.frame
-    target_codes = [str(x) for x in targets["code"].dropna().tolist()]
+    target_weights = {
+        str(row.code): float(row.target_weight)
+        for row in targets[["code", "target_weight"]].itertuples(index=False)
+    }
+    target_codes = list(target_weights)
 
     if args.enable_live:
         if args.confirm_live != "LIVE":
@@ -67,8 +77,8 @@ def main() -> int:
     ticks = broker.full_tick(all_codes)
     executable = broker.executable_prices(ticks)
     prices = {code: float(v["last"] or v["buy"] or v["sell"]) for code, v in executable.items()}
-    plan = build_equal_weight_plan(
-        target_codes,
+    plan, effective_target_weights = build_target_weight_plan(
+        target_weights,
         prices,
         positions,
         total_asset=total_asset,
@@ -83,13 +93,20 @@ def main() -> int:
         "cash": cash,
         "position_count": len(positions),
         "target_count": len(target_codes),
+        "requested_target_weight_sum": float(sum(target_weights.values())),
+        "effective_target_weight_sum": float(sum(effective_target_weights.values())),
         "signal_date": str(bundle.signal_date),
         "strategy_sha256": bundle.strategy_sha256,
         "dry_run": not args.enable_live,
     }
     (out / "pretrade_snapshot.json").write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     pd.DataFrame(serialize_plan(plan)).to_csv(out / "order_plan.csv", index=False, encoding="utf-8-sig")
-    risk_report = validate_pretrade(plan, total_asset=total_asset, target_count=len(target_codes))
+    risk_report = validate_pretrade(
+        plan,
+        total_asset=total_asset,
+        target_count=len(target_codes),
+        target_weights=effective_target_weights,
+    )
     (out / "pretrade_risk.json").write_text(json.dumps(risk_report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     print(json.dumps({"pretrade_risk": risk_report}, ensure_ascii=False, indent=2))
@@ -109,6 +126,7 @@ def main() -> int:
             "signal_date": str(bundle.signal_date),
             "strategy_sha256": bundle.strategy_sha256,
             "planned_order_count": len(plan),
+            "effective_target_weight_sum": float(sum(effective_target_weights.values())),
         },
     )
     results = broker.submit_plan(plan, on_event=lambda event: _append_jsonl_fsync(journal, event))
