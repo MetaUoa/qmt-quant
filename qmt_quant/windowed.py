@@ -54,6 +54,27 @@ def context_start_for_window(
     return pd.Timestamp(calendar[context_i]), actual_start, truncated
 
 
+def _metric_equity_with_baseline(
+    raw_equity: pd.Series,
+    window_equity: pd.Series,
+    *,
+    actual_start: pd.Timestamp,
+    initial_cash: float,
+) -> tuple[pd.Series, pd.Timestamp, bool]:
+    """Prepend one pre-trade NAV point so first-session PnL is not discarded."""
+    prior = raw_equity.loc[raw_equity.index < actual_start].dropna().tail(1)
+    synthetic = False
+    if prior.empty:
+        baseline_ts = actual_start - pd.Timedelta(nanoseconds=1)
+        prior = pd.Series([float(initial_cash)], index=pd.DatetimeIndex([baseline_ts]))
+        synthetic = True
+    else:
+        baseline_ts = pd.Timestamp(prior.index[-1])
+    metric_equity = pd.concat([prior, window_equity.dropna()]).sort_index()
+    metric_equity = metric_equity[~metric_equity.index.duplicated(keep="last")]
+    return metric_equity, baseline_ts, synthetic
+
+
 def run_window_backtest(
     bars: Dict[str, pd.DataFrame],
     benchmark_code: str,
@@ -105,7 +126,20 @@ def run_window_backtest(
         dates = pd.to_datetime(trades["date"], errors="coerce")
         trades = trades.loc[(dates >= actual_start) & (dates <= end)].copy()
 
-    metrics = calculate_metrics(equity["equity"]) if not equity.empty else {}
+    if not equity.empty:
+        metric_equity, baseline_ts, baseline_synthetic = _metric_equity_with_baseline(
+            raw.equity["equity"],
+            equity["equity"],
+            actual_start=actual_start,
+            initial_cash=cost.initial_cash,
+        )
+        metrics = calculate_metrics(metric_equity)
+        # The baseline is an accounting anchor, not part of the requested reporting window.
+        metrics["start"] = str(actual_start.date())
+        metrics["window_metric_baseline_date"] = str(pd.Timestamp(baseline_ts).date())
+        metrics["window_metric_baseline_synthetic"] = bool(baseline_synthetic)
+    else:
+        metrics = {}
     return_keys = set(metrics)
     for key, value in raw.metrics.items():
         if key not in return_keys:
