@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 from typing import Mapping, Sequence
@@ -44,8 +45,30 @@ def recovery_report_sha256(report: Mapping[str, object]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _strict_int(value: object, *, name: str, default: int = 0) -> int:
+    if value is None or value == "":
+        return int(default)
+    if isinstance(value, bool):
+        raise RuntimeError(f"{name} must be an integer, not bool")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise RuntimeError(f"{name} must be a finite integer")
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return int(default)
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise RuntimeError(f"{name} must be an integer") from exc
+    raise RuntimeError(f"{name} must be an integer")
+
+
 def _positive_order_id(row: Mapping[str, object]) -> int:
-    value = int(row.get("order_id", 0) or 0)
+    value = _strict_int(row.get("order_id"), name="order_id")
     return value if value > 0 else 0
 
 
