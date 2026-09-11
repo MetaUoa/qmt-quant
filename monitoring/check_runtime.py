@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+from typing import Mapping
 
 from monitoring.alerts import JsonlAlertSink, runtime_health_alert
 from qmt_quant.live_safety import (
@@ -24,9 +25,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--signal", default="output/live_targets/signal_diagnostics.json")
     p.add_argument("--execution", default="output/live_execution/pretrade_risk.json")
     p.add_argument("--runtime-risk", default="output/live_execution/runtime_risk.json")
+    p.add_argument("--freshness", default="output/live_execution/freshness_report.json")
     p.add_argument("--output", default="output/monitoring/runtime_health.json")
     p.add_argument("--alert-jsonl", default="output/monitoring/runtime_alerts.jsonl")
     return p.parse_args()
+
+
+def _binding_matches_bundle(binding: Mapping[str, object], bundle: object) -> tuple[bool, str, str]:
+    batch_id = str(binding.get("batch_id", ""))
+    account_key = str(binding.get("account_key", ""))
+    matches = bool(
+        _SHA256_RE.fullmatch(batch_id)
+        and _SHA256_RE.fullmatch(account_key)
+        and str(binding.get("strategy_sha256", "")) == str(getattr(bundle, "strategy_sha256"))
+        and str(binding.get("target_file_sha256", "")) == str(getattr(bundle, "target_file_sha256"))
+        and str(binding.get("signal_date", "")) == str(getattr(bundle, "signal_date"))
+        and str(binding.get("expected_execution_session", ""))
+        == str(getattr(bundle, "expected_execution_session"))
+        and str(binding.get("expires_after_session", "")) == str(getattr(bundle, "expires_after_session"))
+    )
+    return matches, batch_id, account_key
 
 
 def main() -> int:
@@ -82,18 +100,8 @@ def main() -> int:
         checks["runtime_risk_passed"] = bool(runtime.get("passed")) if isinstance(runtime, dict) else False
         binding = runtime.get("binding") if isinstance(runtime, dict) else None
         if bundle is not None and isinstance(binding, dict):
-            batch_id = str(binding.get("batch_id", ""))
-            account_key = str(binding.get("account_key", ""))
-            checks["runtime_binding_match"] = bool(
-                _SHA256_RE.fullmatch(batch_id)
-                and _SHA256_RE.fullmatch(account_key)
-                and str(binding.get("strategy_sha256", "")) == bundle.strategy_sha256
-                and str(binding.get("target_file_sha256", "")) == bundle.target_file_sha256
-                and str(binding.get("signal_date", "")) == str(bundle.signal_date)
-                and str(binding.get("expected_execution_session", ""))
-                == str(bundle.expected_execution_session)
-                and str(binding.get("expires_after_session", "")) == str(bundle.expires_after_session)
-            )
+            matches, batch_id, account_key = _binding_matches_bundle(binding, bundle)
+            checks["runtime_binding_match"] = matches
             checks["runtime_batch_id"] = batch_id
             checks["runtime_account_key"] = account_key
         else:
@@ -103,6 +111,37 @@ def main() -> int:
         checks["runtime_risk_passed"] = False
         checks["runtime_binding_match"] = False
 
+    freshness_path = Path(args.freshness)
+    if freshness_path.exists():
+        try:
+            freshness = json.loads(freshness_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            freshness = None
+            checks["freshness_error"] = f"{type(exc).__name__}: {exc}"
+        checks["freshness_present"] = isinstance(freshness, dict)
+        checks["freshness_passed"] = bool(freshness.get("passed")) if isinstance(freshness, dict) else False
+        freshness_binding = freshness.get("binding") if isinstance(freshness, dict) else None
+        broker_health = freshness.get("broker_health") if isinstance(freshness, dict) else None
+        if bundle is not None and isinstance(freshness_binding, dict):
+            matches, batch_id, account_key = _binding_matches_bundle(freshness_binding, bundle)
+            checks["freshness_binding_match"] = matches
+            checks["freshness_batch_id"] = batch_id
+            checks["freshness_account_key"] = account_key
+        else:
+            checks["freshness_binding_match"] = False
+        if isinstance(broker_health, dict):
+            checks["broker_connection_not_lost"] = broker_health.get("connection_lost") is False
+            checks["broker_event_sink_healthy"] = broker_health.get("event_sink_failed") is False
+        else:
+            checks["broker_connection_not_lost"] = False
+            checks["broker_event_sink_healthy"] = False
+    else:
+        checks["freshness_present"] = False
+        checks["freshness_passed"] = False
+        checks["freshness_binding_match"] = False
+        checks["broker_connection_not_lost"] = False
+        checks["broker_event_sink_healthy"] = False
+
     mandatory = (
         "target_bundle_valid",
         "acceptance_ok",
@@ -110,6 +149,11 @@ def main() -> int:
         "runtime_risk_present",
         "runtime_risk_passed",
         "runtime_binding_match",
+        "freshness_present",
+        "freshness_passed",
+        "freshness_binding_match",
+        "broker_connection_not_lost",
+        "broker_event_sink_healthy",
     )
     checks["passed"] = all(checks.get(key) is True for key in mandatory)
     payload = {
