@@ -80,6 +80,17 @@ class RawTradeFill:
     shares: int
     raw_price: float
     source_sha256: str
+    price_source: str
+    adjustment_mode: str
+
+    def price_provenance(self) -> dict[str, str]:
+        return require_unadjusted_price_provenance(
+            {
+                "source_sha256": self.source_sha256,
+                "source": self.price_source,
+                "adjustment_mode": self.adjustment_mode,
+            }
+        )
 
     def validate(self) -> None:
         if not str(self.fill_id).strip():
@@ -91,7 +102,7 @@ class RawTradeFill:
         _strict_shares(self.shares, name="shares", allow_zero=False)
         if _finite(self.raw_price, name="raw_price", non_negative=True) <= 0:
             raise ValueError("raw_price must be positive")
-        _require_sha256(self.source_sha256, name="fill.source_sha256")
+        self.price_provenance()
 
 
 @dataclass(frozen=True)
@@ -161,6 +172,7 @@ class RawExecutionLedger:
     ) -> dict[str, object]:
         fill.validate()
         self._reserve_event_id(fill.fill_id)
+        provenance = fill.price_provenance()
         code = str(fill.code)
         side = str(fill.side).upper()
         shares = _strict_shares(fill.shares, name="shares", allow_zero=False)
@@ -203,7 +215,7 @@ class RawExecutionLedger:
             "shares": shares,
             "raw_price": price,
             "notional": notional,
-            "source_sha256": _require_sha256(fill.source_sha256, name="fill.source_sha256"),
+            "price_provenance": provenance,
             "cash_before": cash_before,
             "cash_after": float(cash_after),
             "shares_before": before_shares,
