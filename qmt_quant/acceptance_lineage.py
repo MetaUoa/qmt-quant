@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 
+from .cost_manifest import validate_cost_manifest
 from .holdout import verify_candidate_manifest
 from .production_candidate import load_legacy_strategy_config
 from .run_manifest import build_run_manifest, validate_run_manifest
@@ -40,6 +41,19 @@ def sha256_path(path: str | Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _load_json_object(path: str | Path, *, name: str) -> dict[str, object]:
+    source = Path(path)
+    if not source.exists() or not source.is_file():
+        raise FileNotFoundError(source)
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{name} must be a UTF-8 JSON object") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    return {str(key): value for key, value in payload.items()}
 
 
 def resolve_strategy_source_sha256(path: str | Path) -> str:
@@ -104,6 +118,11 @@ def build_acceptance_lineage(
         raise RuntimeError(
             "strategy source identity does not match --strategy-sha256; refusing mixed acceptance evidence"
         )
+
+    cost_manifest_payload = _load_json_object(
+        artifact_paths["cost_manifest"], name="cost manifest"
+    )
+    validate_cost_manifest(cost_manifest_payload)
 
     evidence_hashes = {key: sha256_path(evidence_paths[key]) for key in EVIDENCE_KEYS}
     artifact_hashes = {key: sha256_path(artifact_paths[key]) for key in LINEAGE_ARTIFACT_KEYS}
