@@ -133,13 +133,7 @@ class CorporateActionEvent:
 
 
 class RawExecutionLedger:
-    """Cash/share ledger that never uses adjusted prices for execution accounting.
-
-    Corporate-action inputs are already-settled registrar/accounting facts: cash per
-    pre-action share is the cash actually credited by the source ledger, and a share
-    multiplier must produce an integer settled share count. Ambiguous fractional
-    entitlements fail closed instead of inventing rounding or tax treatment.
-    """
+    """Cash/share ledger that never uses adjusted prices for execution accounting."""
 
     def __init__(self, *, initial_cash: float, positions: Mapping[str, int] | None = None) -> None:
         self._initial_cash = _finite(initial_cash, name="initial_cash", non_negative=True)
@@ -154,13 +148,18 @@ class RawExecutionLedger:
         self.entries: list[dict[str, object]] = []
         self._applied_event_ids: set[str] = set()
 
-    def _reserve_event_id(self, event_id: str) -> None:
+    def _available_event_id(self, event_id: str) -> str:
         token = str(event_id).strip()
         if not token:
             raise ValueError("event_id is required")
         if token in self._applied_event_ids:
             raise RuntimeError(f"duplicate raw-ledger event id: {token}")
-        self._applied_event_ids.add(token)
+        return token
+
+    def _commit_entry(self, event_id: str, entry: dict[str, object]) -> dict[str, object]:
+        self._applied_event_ids.add(event_id)
+        self.entries.append(entry)
+        return dict(entry)
 
     def apply_trade(
         self,
@@ -171,7 +170,7 @@ class RawExecutionLedger:
         commission_includes_exchange_and_management: bool = True,
     ) -> dict[str, object]:
         fill.validate()
-        self._reserve_event_id(fill.fill_id)
+        event_id = self._available_event_id(fill.fill_id)
         provenance = fill.price_provenance()
         code = str(fill.code)
         side = str(fill.side).upper()
@@ -199,16 +198,11 @@ class RawExecutionLedger:
             after_shares = before_shares - shares
             cash_after = cash_before + notional - fees.total_cash_fee
 
-        self.cash = float(cash_after)
-        if after_shares > 0:
-            self.positions[code] = after_shares
-        else:
-            self.positions.pop(code, None)
         regime = fee_regime_for(fill.trade_date)
         entry: dict[str, object] = {
             "schema": RAW_LEDGER_SCHEMA,
             "event_type": "TRADE",
-            "event_id": fill.fill_id,
+            "event_id": event_id,
             "event_date": fill.trade_date.isoformat(),
             "code": code,
             "side": side,
@@ -226,12 +220,16 @@ class RawExecutionLedger:
             },
             "fees": asdict(fees),
         }
-        self.entries.append(entry)
-        return dict(entry)
+        self.cash = float(cash_after)
+        if after_shares > 0:
+            self.positions[code] = after_shares
+        else:
+            self.positions.pop(code, None)
+        return self._commit_entry(event_id, entry)
 
     def apply_corporate_action(self, event: CorporateActionEvent) -> dict[str, object]:
         event.validate()
-        self._reserve_event_id(event.event_id)
+        event_id = self._available_event_id(event.event_id)
         code = str(event.code)
         before_shares = int(self.positions.get(code, 0))
         cash_before = float(self.cash)
@@ -251,15 +249,11 @@ class RawExecutionLedger:
             )
             + _finite(event.cash_in_lieu, name="cash_in_lieu", non_negative=True)
         )
-        self.cash = cash_before + cash_delta
-        if rounded_shares > 0:
-            self.positions[code] = rounded_shares
-        else:
-            self.positions.pop(code, None)
+        cash_after = cash_before + cash_delta
         entry: dict[str, object] = {
             "schema": RAW_LEDGER_SCHEMA,
             "event_type": "CORPORATE_ACTION",
-            "event_id": event.event_id,
+            "event_id": event_id,
             "event_date": event.action_date.isoformat(),
             "code": code,
             "source_sha256": _require_sha256(
@@ -270,12 +264,16 @@ class RawExecutionLedger:
             "cash_in_lieu": float(event.cash_in_lieu),
             "cash_delta": float(cash_delta),
             "cash_before": cash_before,
-            "cash_after": float(self.cash),
+            "cash_after": float(cash_after),
             "shares_before": before_shares,
             "shares_after": rounded_shares,
         }
-        self.entries.append(entry)
-        return dict(entry)
+        self.cash = float(cash_after)
+        if rounded_shares > 0:
+            self.positions[code] = rounded_shares
+        else:
+            self.positions.pop(code, None)
+        return self._commit_entry(event_id, entry)
 
     def mark_to_market(
         self,
