@@ -12,6 +12,10 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
     for path in (
         "qmt_quant/production_candidate.py",
         "qmt_quant/acceptance_lineage.py",
+        "qmt_quant/run_manifest.py",
+        "qmt_quant/cost_manifest.py",
+        "qmt_quant/historical_fees.py",
+        "qmt_quant/raw_ledger.py",
         "qmt_quant/live_safety.py",
         "qmt_quant/live_trader.py",
         "qmt_quant/broker_events.py",
@@ -42,6 +46,7 @@ def test_targeted_mypy_covers_expanded_core_safety_modules() -> None:
         "qmt_quant/neutralization_diagnostics.py",
         "qmt_quant/v5_selector.py",
         "generate_live_targets.py",
+        "build_cost_manifest.py",
         "run_acceptance.py",
         "run_v5_c9_neutralization_diagnostics.py",
         "run_qmt_executor.py",
