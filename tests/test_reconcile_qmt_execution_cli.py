@@ -30,6 +30,9 @@ class _FakeBroker:
     def query_trades(self):
         return []
 
+    def snapshot(self):
+        return 1000.0, 1000.0, {}
+
 
 def _prepare_state(tmp_path: Path) -> tuple[Path, str, Path]:
     state_root = tmp_path / "state"
@@ -76,6 +79,8 @@ def test_recovery_cli_audits_without_releasing_lock(tmp_path, monkeypatch):
     assert load_account_execution_lock(state_root, account_key=account_key) is not None
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["safe_to_acknowledge"] is True
+    assert report["cash_state_verified"] is True
+    assert report["position_state_verified"] is True
     assert report["acknowledgement"] == "NOT_REQUESTED"
 
 
