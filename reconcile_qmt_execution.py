@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session-id", type=int, default=26090201)
     parser.add_argument("--state-dir", default="output/execution_state")
     parser.add_argument("--output", default="output/execution_recovery/recovery_report.json")
+    parser.add_argument("--cash-tolerance", type=float, default=2.0)
     parser.add_argument(
         "--acknowledge-batch",
         default="",
@@ -50,6 +51,8 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.cash_tolerance < 0:
+        raise ValueError("--cash-tolerance must be non-negative")
     state_root = Path(args.state_dir).resolve()
     output = Path(args.output)
     account_key = account_execution_key(account_id=args.account, account_type=args.account_type)
@@ -88,6 +91,7 @@ def main() -> int:
     all_orders = broker.query_orders(cancelable_only=False)
     cancelable_orders = broker.query_orders(cancelable_only=True)
     trades = broker.query_trades()
+    total_asset, cash, positions = broker.snapshot()
     report = assess_execution_recovery(
         batch_marker=batch,
         account_lock=lock,
@@ -95,6 +99,12 @@ def main() -> int:
         all_orders=all_orders,
         cancelable_orders=cancelable_orders,
         trades=trades,
+        account_snapshot={
+            "total_asset": float(total_asset),
+            "cash": float(cash),
+            "positions": dict(positions),
+        },
+        cash_tolerance=float(args.cash_tolerance),
     )
     report["batch_marker_path"] = str(batch_path)
     report["journal_path"] = str(journal_path)
@@ -119,6 +129,9 @@ def main() -> int:
                 "recovery_report_sha256": report["report_sha256"],
                 "recovery_outcome": report["outcome"],
                 "known_order_ids": report["known_order_ids"],
+                "callback_trade_verified": report["callback_trade_verified"],
+                "cash_state_verified": report["cash_state_verified"],
+                "position_state_verified": report["position_state_verified"],
             },
         )
         release_account_execution_lock(
