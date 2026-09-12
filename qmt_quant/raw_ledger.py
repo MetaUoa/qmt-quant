@@ -25,9 +25,17 @@ def _require_sha256(value: object, *, name: str) -> str:
 
 
 def _finite(value: object, *, name: str, non_negative: bool = False) -> float:
-    if isinstance(value, bool):
+    if value is None or value == "" or isinstance(value, bool):
         raise ValueError(f"{name} must be numeric")
-    number = float(value)
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"{name} must be numeric") from exc
+    else:
+        raise ValueError(f"{name} must be numeric")
     if not math.isfinite(number):
         raise ValueError(f"{name} must be finite")
     if non_negative and number < 0:
@@ -125,11 +133,12 @@ class RawExecutionLedger:
     def __init__(self, *, initial_cash: float, positions: Mapping[str, int] | None = None) -> None:
         self._initial_cash = _finite(initial_cash, name="initial_cash", non_negative=True)
         self.cash = self._initial_cash
-        self._initial_positions = {
-            str(code): _strict_shares(shares, name=f"positions.{code}")
-            for code, shares in (positions or {}).items()
-            if _strict_shares(shares, name=f"positions.{code}") > 0
-        }
+        normalized_positions: dict[str, int] = {}
+        for code, value in (positions or {}).items():
+            shares = _strict_shares(value, name=f"positions.{code}")
+            if shares > 0:
+                normalized_positions[str(code)] = shares
+        self._initial_positions = normalized_positions
         self.positions = dict(self._initial_positions)
         self.entries: list[dict[str, object]] = []
         self._applied_event_ids: set[str] = set()
@@ -309,11 +318,11 @@ class RawExecutionLedger:
     ) -> dict[str, object]:
         tolerance = _finite(cash_tolerance, name="cash_tolerance", non_negative=True)
         cash_value = _finite(observed_cash, name="observed_cash", non_negative=True)
-        normalized_positions = {
-            str(code): _strict_shares(shares, name=f"observed_positions.{code}")
-            for code, shares in observed_positions.items()
-            if _strict_shares(shares, name=f"observed_positions.{code}") > 0
-        }
+        normalized_positions: dict[str, int] = {}
+        for code, value in observed_positions.items():
+            shares = _strict_shares(value, name=f"observed_positions.{code}")
+            if shares > 0:
+                normalized_positions[str(code)] = shares
         cash_delta = cash_value - float(self.cash)
         position_match = normalized_positions == self.positions
         return {
