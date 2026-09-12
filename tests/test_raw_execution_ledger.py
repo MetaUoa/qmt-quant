@@ -35,11 +35,7 @@ def _fill(**overrides) -> RawTradeFill:
 def test_raw_trade_uses_historical_fee_regime_and_preserves_cash_shares() -> None:
     ledger = RawExecutionLedger(initial_cash=100_000.0)
     row = ledger.apply_trade(
-        _fill(
-            fill_id="buy-1",
-            trade_date=date(2022, 4, 28),
-            shares=1000,
-        ),
+        _fill(fill_id="buy-1", trade_date=date(2022, 4, 28), shares=1000),
         broker_commission_rate=0.00025,
         min_broker_commission=5.0,
     )
@@ -82,6 +78,26 @@ def test_trade_fill_rejects_adjusted_execution_price_provenance() -> None:
     assert ledger.cash == pytest.approx(10_000.0)
 
 
+def test_failed_trade_does_not_consume_event_id_or_mutate_state() -> None:
+    ledger = RawExecutionLedger(initial_cash=100.0)
+    expensive = _fill(fill_id="retryable", shares=100, raw_price=10.0)
+    with pytest.raises(RuntimeError, match="negative cash"):
+        ledger.apply_trade(
+            expensive,
+            broker_commission_rate=0.00025,
+            min_broker_commission=5.0,
+        )
+    assert ledger.snapshot()["entry_count"] == 0
+    assert ledger.cash == pytest.approx(100.0)
+    row = ledger.apply_trade(
+        _fill(fill_id="retryable", shares=1, raw_price=10.0),
+        broker_commission_rate=0.0,
+        min_broker_commission=0.0,
+    )
+    assert row["event_id"] == "retryable"
+    assert ledger.snapshot()["entry_count"] == 1
+
+
 def test_corporate_action_applies_exact_share_and_cash_delta_once() -> None:
     ledger = RawExecutionLedger(initial_cash=100.0, positions={"000001.SZ": 1000})
     event = CorporateActionEvent(
@@ -114,6 +130,32 @@ def test_fractional_corporate_action_requires_explicit_registrar_settlement() ->
                 source_sha256=SOURCE,
             )
         )
+
+
+def test_failed_corporate_action_does_not_consume_event_id() -> None:
+    ledger = RawExecutionLedger(initial_cash=0.0, positions={"000001.SZ": 101})
+    failed = CorporateActionEvent(
+        event_id="ca-retry",
+        action_date=date(2024, 6, 1),
+        code="000001.SZ",
+        share_multiplier=1.1,
+        cash_per_pre_action_share=0.0,
+        cash_in_lieu=0.0,
+        source_sha256=SOURCE,
+    )
+    with pytest.raises(RuntimeError, match="fractional"):
+        ledger.apply_corporate_action(failed)
+    accepted = CorporateActionEvent(
+        event_id="ca-retry",
+        action_date=date(2024, 6, 1),
+        code="000001.SZ",
+        share_multiplier=1.0,
+        cash_per_pre_action_share=0.0,
+        cash_in_lieu=0.0,
+        source_sha256=SOURCE,
+    )
+    ledger.apply_corporate_action(accepted)
+    assert ledger.snapshot()["entry_count"] == 1
 
 
 def test_adjusted_price_provenance_is_rejected_for_execution_ledger() -> None:
