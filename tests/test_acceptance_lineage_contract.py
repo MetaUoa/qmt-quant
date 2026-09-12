@@ -13,7 +13,7 @@ from qmt_quant.acceptance_lineage import build_acceptance_lineage
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_acceptance_cli_has_no_legacy_v3_defaults(monkeypatch):
+def test_acceptance_cli_has_no_legacy_defaults(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["run_acceptance.py"])
     with pytest.raises(SystemExit):
         run_acceptance.parse_args()
@@ -33,7 +33,7 @@ def test_acceptance_hashes_evidence_file_bytes(tmp_path):
     assert run_acceptance._sha256_path(evidence) == hashlib.sha256(evidence.read_bytes()).hexdigest()
 
 
-def test_acceptance_v3_binds_strategy_source_and_all_lineage_artifacts(tmp_path):
+def test_acceptance_v4_binds_strategy_source_cost_and_run_manifest(tmp_path):
     strategy_source = tmp_path / "strategy.json"
     strategy_source.write_bytes(b"{}")
     strategy_sha = hashlib.sha256(strategy_source.read_bytes()).hexdigest()
@@ -45,7 +45,13 @@ def test_acceptance_v3_binds_strategy_source_and_all_lineage_artifacts(tmp_path)
         evidence_paths[key] = path
 
     artifact_paths = {"strategy_source": strategy_source}
-    for key in ("config", "data_lineage", "engine_manifest", "dependency_lock"):
+    for key in (
+        "config",
+        "data_lineage",
+        "engine_manifest",
+        "dependency_lock",
+        "cost_manifest",
+    ):
         path = tmp_path / f"{key}.txt"
         path.write_text(key, encoding="utf-8")
         artifact_paths[key] = path
@@ -54,14 +60,19 @@ def test_acceptance_v3_binds_strategy_source_and_all_lineage_artifacts(tmp_path)
         strategy_sha256=strategy_sha,
         evidence_paths=evidence_paths,
         artifact_paths=artifact_paths,
+        repo_root=ROOT,
     )
     assert lineage["strategy_sha256"] == strategy_sha
     assert len(lineage["evidence_sha256"]) == 4
-    assert len(lineage["artifact_sha256"]) == 5
+    assert len(lineage["artifact_sha256"]) == 6
     assert len(lineage["binding_sha256"]) == 64
+    assert len(lineage["run_id"]) == 64
+    assert lineage["run_manifest"]["run_id"] == lineage["run_id"]
+    assert len(lineage["run_manifest"]["git"]["commit_sha1"]) == 40
+    assert len(lineage["run_manifest"]["git"]["tree_sha1"]) == 40
 
 
-def test_acceptance_v3_rejects_user_sha_not_derived_from_strategy_source(tmp_path):
+def test_acceptance_v4_rejects_user_sha_not_derived_from_strategy_source(tmp_path):
     strategy_source = tmp_path / "strategy.json"
     strategy_source.write_bytes(b"{}")
     evidence_paths = {}
@@ -70,7 +81,13 @@ def test_acceptance_v3_rejects_user_sha_not_derived_from_strategy_source(tmp_pat
         path.write_text(key, encoding="utf-8")
         evidence_paths[key] = path
     artifact_paths = {"strategy_source": strategy_source}
-    for key in ("config", "data_lineage", "engine_manifest", "dependency_lock"):
+    for key in (
+        "config",
+        "data_lineage",
+        "engine_manifest",
+        "dependency_lock",
+        "cost_manifest",
+    ):
         path = tmp_path / f"{key}.txt"
         path.write_text(key, encoding="utf-8")
         artifact_paths[key] = path
@@ -79,10 +96,11 @@ def test_acceptance_v3_rejects_user_sha_not_derived_from_strategy_source(tmp_pat
             strategy_sha256="a" * 64,
             evidence_paths=evidence_paths,
             artifact_paths=artifact_paths,
+            repo_root=ROOT,
         )
 
 
-def test_acceptance_source_requires_full_v3_lineage_inputs():
+def test_acceptance_source_requires_full_v4_lineage_inputs():
     source = Path(run_acceptance.__file__).read_text(encoding="utf-8")
     assert "output/v3_research" not in source
     for arg in (
@@ -96,10 +114,15 @@ def test_acceptance_source_requires_full_v3_lineage_inputs():
         "--data-lineage",
         "--engine-manifest",
         "--dependency-lock",
+        "--cost-manifest",
     ):
         assert f'p.add_argument("{arg}", required=True)' in source
     assert 'report["lineage"]' in source
     assert 'report["evidence_sha256"]' in source
+    assert 'report["artifact_sha256"]' in source
+    assert 'report["run_id"]' in source
+    assert 'report["run_manifest"]' in source
+    assert 'out / "run_manifest.json"' in source
 
 
 def test_legacy_acceptance_batch_is_fail_closed():
