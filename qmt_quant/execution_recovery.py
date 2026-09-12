@@ -71,10 +71,15 @@ def _strict_int(value: object, *, name: str, default: int = 0) -> int:
 def _strict_float(value: object, *, name: str) -> float:
     if value is None or value == "" or isinstance(value, bool):
         raise RuntimeError(f"{name} must be numeric")
-    try:
+    if isinstance(value, (int, float)):
         number = float(value)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"{name} must be numeric") from exc
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError as exc:
+            raise RuntimeError(f"{name} must be numeric") from exc
+    else:
+        raise RuntimeError(f"{name} must be numeric")
     if not math.isfinite(number):
         raise RuntimeError(f"{name} must be finite")
     return number
