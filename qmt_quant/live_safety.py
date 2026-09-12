@@ -182,10 +182,22 @@ def validate_acceptance_for_strategy(path: str | Path, minimum: str, strategy_sh
         strategy_sha256=strategy_sha256,
     )
     top_level_evidence = report.get("evidence_sha256")
-    if not isinstance(top_level_evidence, Mapping):
-        raise RuntimeError("live acceptance requires evidence SHA256 metadata")
+    top_level_artifacts = report.get("artifact_sha256")
+    if not isinstance(top_level_evidence, Mapping) or not isinstance(top_level_artifacts, Mapping):
+        raise RuntimeError("live acceptance requires evidence and artifact SHA256 metadata")
     if {str(k): str(v) for k, v in top_level_evidence.items()} != validated_lineage["evidence_sha256"]:
         raise RuntimeError("acceptance evidence SHA256 does not match lineage binding")
+    if {str(k): str(v) for k, v in top_level_artifacts.items()} != validated_lineage["artifact_sha256"]:
+        raise RuntimeError("acceptance artifact SHA256 does not match lineage binding")
+
+    top_level_run_id = str(report.get("run_id", ""))
+    if top_level_run_id != validated_lineage["run_id"]:
+        raise RuntimeError("acceptance run_id does not match immutable lineage run manifest")
+    top_level_manifest = report.get("run_manifest")
+    if not isinstance(top_level_manifest, Mapping):
+        raise RuntimeError("live acceptance requires top-level immutable run_manifest")
+    if dict(top_level_manifest) != validated_lineage["run_manifest"]:
+        raise RuntimeError("acceptance top-level run_manifest does not match lineage binding")
 
     rank = {"REJECT": 0, "C": 1, "B": 2, "A": 3}
     grade = str(report.get("grade", "REJECT"))

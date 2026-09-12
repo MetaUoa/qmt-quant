@@ -9,6 +9,7 @@ import pytest
 
 import qmt_quant.live_safety as live_safety
 from qmt_quant.acceptance_lineage import lineage_binding_sha256
+from qmt_quant.run_manifest import RUN_MANIFEST_SCHEMA, canonical_sha256
 
 
 SHA = "a" * 64
@@ -67,25 +68,47 @@ def _acceptance_payload(*, grade="B", strategy_sha=SHA, binding_valid=True):
         "data_lineage": ARTIFACT_SHA,
         "engine_manifest": ARTIFACT_SHA,
         "dependency_lock": ARTIFACT_SHA,
+        "cost_manifest": ARTIFACT_SHA,
     }
+    run_core = {
+        "schema": RUN_MANIFEST_SCHEMA,
+        "git": {"commit_sha1": "1" * 40, "tree_sha1": "2" * 40},
+        "python": {
+            "implementation": "CPython",
+            "version": "3.12.10",
+            "major_minor": "3.12",
+        },
+        "strategy_sha256": strategy_sha,
+        "evidence_sha256": evidence,
+        "artifact_sha256": artifacts,
+    }
+    run_manifest = {**run_core, "run_id": canonical_sha256(run_core)}
+    run_id = str(run_manifest["run_id"])
     binding = lineage_binding_sha256(
         strategy_sha256=strategy_sha,
         evidence_sha256=evidence,
         artifact_sha256=artifacts,
+        run_id=run_id,
     )
     if not binding_valid:
         binding = "e" * 64
+    lineage = {
+        "strategy_sha256": strategy_sha,
+        "evidence_sha256": evidence,
+        "artifact_sha256": artifacts,
+        "run_id": run_id,
+        "run_manifest": run_manifest,
+        "binding_sha256": binding,
+    }
     return {
-        "schema": "qmt-acceptance-v3",
+        "schema": "qmt-acceptance-v4",
         "grade": grade,
         "strategy_sha256": strategy_sha,
         "evidence_sha256": evidence,
-        "lineage": {
-            "strategy_sha256": strategy_sha,
-            "evidence_sha256": evidence,
-            "artifact_sha256": artifacts,
-            "binding_sha256": binding,
-        },
+        "artifact_sha256": artifacts,
+        "run_id": run_id,
+        "run_manifest": run_manifest,
+        "lineage": lineage,
     }
 
 
@@ -177,7 +200,17 @@ def test_live_acceptance_rejects_v2_report(tmp_path):
         json.dumps({"schema": "qmt-acceptance-v2", "grade": "A", "strategy_sha256": SHA}),
         encoding="utf-8",
     )
-    with pytest.raises(RuntimeError, match="schema qmt-acceptance-v3"):
+    with pytest.raises(RuntimeError, match="schema qmt-acceptance-v4"):
+        live_safety.validate_acceptance_for_strategy(acceptance, "C", SHA)
+
+
+def test_live_acceptance_rejects_v3_report(tmp_path):
+    acceptance = tmp_path / "acceptance.json"
+    acceptance.write_text(
+        json.dumps({"schema": "qmt-acceptance-v3", "grade": "A", "strategy_sha256": SHA}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="schema qmt-acceptance-v4"):
         live_safety.validate_acceptance_for_strategy(acceptance, "C", SHA)
 
 

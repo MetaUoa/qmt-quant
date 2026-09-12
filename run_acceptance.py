@@ -27,6 +27,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--data-lineage", required=True)
     p.add_argument("--engine-manifest", required=True)
     p.add_argument("--dependency-lock", required=True)
+    p.add_argument("--cost-manifest", required=True)
+    p.add_argument("--repo-root", default=".")
     p.add_argument("--output", default="output/v5_acceptance")
     p.add_argument("--require-grade", choices=["A", "B", "C"], default="C")
     return p.parse_args()
@@ -73,11 +75,13 @@ def main() -> int:
         "data_lineage": str(Path(args.data_lineage)),
         "engine_manifest": str(Path(args.engine_manifest)),
         "dependency_lock": str(Path(args.dependency_lock)),
+        "cost_manifest": str(Path(args.cost_manifest)),
     }
     lineage = build_acceptance_lineage(
         strategy_sha256=strategy_sha256,
         evidence_paths=evidence_paths,
         artifact_paths=lineage_paths,
+        repo_root=Path(args.repo_root),
     )
 
     report = grade_strategy(backtest, oos, folds, stress)
@@ -87,9 +91,15 @@ def main() -> int:
     report["lineage_artifacts"] = lineage_paths
     report["lineage"] = lineage
     report["evidence_sha256"] = lineage["evidence_sha256"]
+    report["artifact_sha256"] = lineage["artifact_sha256"]
+    report["run_id"] = lineage["run_id"]
+    report["run_manifest"] = lineage["run_manifest"]
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
+    (out / "run_manifest.json").write_text(
+        json.dumps(lineage["run_manifest"], ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     (out / "acceptance_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

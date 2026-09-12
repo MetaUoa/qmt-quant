@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -9,7 +10,7 @@ import re
 from typing import Mapping, Sequence
 
 
-RECOVERY_SCHEMA = "qmt-execution-recovery-v1"
+RECOVERY_SCHEMA = "qmt-execution-recovery-v2"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -67,6 +68,23 @@ def _strict_int(value: object, *, name: str, default: int = 0) -> int:
     raise RuntimeError(f"{name} must be an integer")
 
 
+def _strict_float(value: object, *, name: str) -> float:
+    if value is None or value == "" or isinstance(value, bool):
+        raise RuntimeError(f"{name} must be numeric")
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError as exc:
+            raise RuntimeError(f"{name} must be numeric") from exc
+    else:
+        raise RuntimeError(f"{name} must be numeric")
+    if not math.isfinite(number):
+        raise RuntimeError(f"{name} must be finite")
+    return number
+
+
 def _positive_order_id(row: Mapping[str, object]) -> int:
     value = _strict_int(row.get("order_id"), name="order_id")
     return value if value > 0 else 0
@@ -84,6 +102,34 @@ def _order_map(rows: Sequence[Mapping[str, object]]) -> dict[int, dict]:
     return out
 
 
+def _trade_identity(row: Mapping[str, object]) -> tuple[object, ...]:
+    order_id = _positive_order_id(row)
+    if order_id <= 0:
+        raise RuntimeError("trade recovery record is missing a positive order_id")
+    traded_id = str(row.get("traded_id", "") or "").strip()
+    code = str(row.get("code", "") or "").strip()
+    volume = _strict_int(row.get("traded_volume"), name=f"trade.traded_volume:{order_id}")
+    price = _strict_float(row.get("traded_price"), name=f"trade.traded_price:{order_id}")
+    if volume <= 0 or price <= 0 or not code:
+        raise RuntimeError(f"trade recovery record is invalid for order {order_id}")
+    if traded_id:
+        return ("TRADED_ID", order_id, traded_id)
+    return ("FILL", order_id, code, volume, round(price, 8))
+
+
+def _normalize_positions(value: object) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        raise RuntimeError("account snapshot positions must be a mapping")
+    positions: dict[str, int] = {}
+    for code, shares_value in value.items():
+        shares = _strict_int(shares_value, name=f"account_snapshot.positions.{code}")
+        if shares < 0:
+            raise RuntimeError("account snapshot positions cannot be negative")
+        if shares > 0:
+            positions[str(code)] = shares
+    return positions
+
+
 def assess_execution_recovery(
     *,
     batch_marker: Mapping[str, object],
@@ -92,6 +138,8 @@ def assess_execution_recovery(
     all_orders: Sequence[Mapping[str, object]],
     cancelable_orders: Sequence[Mapping[str, object]],
     trades: Sequence[Mapping[str, object]],
+    account_snapshot: Mapping[str, object] | None = None,
+    cash_tolerance: float = 2.0,
 ) -> dict:
     batch_id = str(batch_marker.get("batch_id", ""))
     account_key = str(batch_marker.get("account_key", ""))
@@ -211,6 +259,89 @@ def assess_execution_recovery(
     if active:
         violations.append("batch_orders_still_cancelable:" + ",".join(str(x) for x in sorted(active)))
 
+    callback_sink_attached = any(
+        str(row.get("event", "")) == "BROKER_EVENT_SINK_ATTACHED" for row in relevant
+    )
+    callback_trade_rows = [
+        row for row in relevant if str(row.get("event", "")) == "BROKER_TRADE"
+    ]
+    callback_trade_verified = not callback_sink_attached
+    if callback_sink_attached:
+        try:
+            broker_counter = Counter(
+                _trade_identity(row)
+                for row in trades
+                if _positive_order_id(row) in known_order_ids
+            )
+            callback_counter = Counter(
+                _trade_identity(row)
+                for row in callback_trade_rows
+                if _positive_order_id(row) in known_order_ids
+            )
+            missing_callbacks = broker_counter - callback_counter
+            orphan_callbacks = callback_counter - broker_counter
+            if missing_callbacks:
+                violations.append(f"missing_callback_trades:{sum(missing_callbacks.values())}")
+            if orphan_callbacks:
+                violations.append(f"orphan_callback_trades:{sum(orphan_callbacks.values())}")
+            callback_trade_verified = not missing_callbacks and not orphan_callbacks
+        except RuntimeError as exc:
+            violations.append(f"callback_trade_reconstruction_error:{exc}")
+            callback_trade_verified = False
+
+    cash_checkpoint_rows = [
+        row
+        for row in relevant
+        if str(row.get("event", "")) in {"SELL_CASH_RECONCILIATION", "BUY_CASH_RECONCILIATION"}
+        and row.get("passed") is True
+    ]
+    position_checkpoint_rows = [
+        row for row in relevant if str(row.get("event", "")) == "ACCOUNT_SNAPSHOT"
+    ]
+    cash_state_verified = account_snapshot is None or not known_order_ids
+    position_state_verified = account_snapshot is None or not known_order_ids
+    observed_cash: float | None = None
+    expected_cash: float | None = None
+    observed_positions: dict[str, int] | None = None
+    expected_positions: dict[str, int] | None = None
+
+    if account_snapshot is not None:
+        observed_cash = _strict_float(account_snapshot.get("cash"), name="account_snapshot.cash")
+        if observed_cash < 0:
+            violations.append("account_snapshot_negative_cash")
+        observed_positions = _normalize_positions(account_snapshot.get("positions", {}))
+        if known_order_ids:
+            if not cash_checkpoint_rows:
+                violations.append("missing_cash_reconciliation_checkpoint")
+                cash_state_verified = False
+            else:
+                latest_cash = cash_checkpoint_rows[-1]
+                try:
+                    expected_cash = _strict_float(
+                        latest_cash.get("cash_after"), name="cash_checkpoint.cash_after"
+                    )
+                    tolerance = max(float(cash_tolerance), 0.0)
+                    cash_state_verified = abs(observed_cash - expected_cash) <= tolerance
+                    if not cash_state_verified:
+                        violations.append("cash_state_drift_after_reconciliation")
+                except RuntimeError as exc:
+                    violations.append(f"cash_checkpoint_invalid:{exc}")
+                    cash_state_verified = False
+
+            if not position_checkpoint_rows:
+                violations.append("missing_position_checkpoint")
+                position_state_verified = False
+            else:
+                latest_position = position_checkpoint_rows[-1]
+                try:
+                    expected_positions = _normalize_positions(latest_position.get("positions", {}))
+                    position_state_verified = observed_positions == expected_positions
+                    if not position_state_verified:
+                        violations.append("position_state_drift_after_checkpoint")
+                except RuntimeError as exc:
+                    violations.append(f"position_checkpoint_invalid:{exc}")
+                    position_state_verified = False
+
     safe_to_acknowledge = not violations
     outcome = "BLOCKED"
     if safe_to_acknowledge:
@@ -233,6 +364,17 @@ def assess_execution_recovery(
         "tagged_order_ids": sorted(tagged_order_ids),
         "active_order_ids": sorted(active),
         "observed_trade_order_ids": sorted(trade_order_ids.intersection(known_order_ids)),
+        "callback_sink_attached": callback_sink_attached,
+        "callback_trade_count": len(callback_trade_rows),
+        "callback_trade_verified": callback_trade_verified,
+        "cash_checkpoint_count": len(cash_checkpoint_rows),
+        "cash_state_verified": cash_state_verified,
+        "observed_cash": observed_cash,
+        "expected_cash_checkpoint": expected_cash,
+        "position_checkpoint_count": len(position_checkpoint_rows),
+        "position_state_verified": position_state_verified,
+        "observed_positions": observed_positions,
+        "expected_positions_checkpoint": expected_positions,
     }
     report["report_sha256"] = recovery_report_sha256(report)
     return report
